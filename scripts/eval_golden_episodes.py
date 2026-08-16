@@ -212,14 +212,197 @@ def run_tools(offering_index, offer_candidates) -> dict:
     }
 
 
+def _llm_round(base_url: str, api_key: str, model: str, messages: list[dict]) -> tuple[str | None, float]:
+    """OpenAI-compatible chat round with retry/backoff (flash-lite rate limits)."""
+    import json as _json
+    import time as _time
+    import urllib.error
+    import urllib.request
+
+    payload = _json.dumps({
+        "model": model,
+        "messages": messages,
+        "max_tokens": 400,
+    }).encode("utf-8")
+    for attempt in range(3):
+        request = urllib.request.Request(
+            f"{base_url.rstrip('/')}/chat/completions",
+            data=payload,
+            headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
+            method="POST",
+        )
+        started = _time.monotonic()
+        try:
+            with urllib.request.urlopen(request, timeout=60) as response:
+                body = _json.loads(response.read().decode("utf-8"))
+                return body["choices"][0]["message"]["content"], _time.monotonic() - started
+        except urllib.error.HTTPError as exc:
+            if exc.code in (429, 500, 503) and attempt < 2:
+                _time.sleep(1.5 * (attempt + 1))
+                continue
+            return None, _time.monotonic() - started
+        except Exception:
+            if attempt < 2:
+                _time.sleep(1.5 * (attempt + 1))
+                continue
+            return None, _time.monotonic() - started
+    return None, 0.0
+
+
+SYSTEM_PROMPT = """Kamu adalah MARAWA, asisten statistik BPS Kabupaten Padang Pariaman di WhatsApp.
+SETIAP balasan WAJIB berupa SATU objek JSON tanpa teks lain, bentuk:
+{"action": "<ACTION>", "ref": "<ref opsional>", "reason": "singkat"}
+
+Daftar ACTION LENGKAP yang boleh dipakai (pilih paling tepat):
+- show_service_menu          # awal sesi: sapaan + menu 5 layanan (orientasi, bukan gerbang)
+- offer_candidates           # penemuan kandidat utk goal baru; JANGAN query sebelum user pilih
+- offer_candidate_clusters   # banyak kandidat → kelompokkan
+- clarify                    # pertanyaan ambigu/tidak jelas → minta klarifikasi
+- inspect_dataset            # user minta lihat detail/isi satu kandidat
+- query_stat_data            # query fakta, HANYA setelah user memilih kandidat (ref wajib)
+- query_and_compare          # bandingkan data dua periode/wilayah (setelah pilih)
+- resolve_or_clarify_candidates  # referensi tidak jelas → tawarkan daftar atau tanya
+- candidate_page             # user minta halaman berikutnya dari daftar kandidat
+- resolve_candidate          # user pilih kandidat → kunci ref utk query
+- compare_sources            # bandingkan sumber/tabel yang mirip
+- rerank_candidates          # user perjelas preferensi → susun ulang kandidat
+- analyze_existing_result    # follow-up dari hasil yang sudah ada (banding/tertinggi)
+- create_artifact            # buat grafik/tabel turunan dari hasil
+- service_fallback_offer     # tidak bisa menjawab → tawarkan form/petugas
+- request_admin_handover     # user minta petugas (antrean, SLA 3 menit)
+- admin_handover_outcome     # hasil handover (diterima/admin sibuk)
+- admin_busy_notice          # tidak ada admin mengangkat dalam 3 menit → info + opsi batal
+- end_session                # user keluar / timeout 5 menit tanpa balasan
+
+ATURAN KERAS:
+1. DILARANG query_stat_data/query_and_compare TANPA kandidat yang SUDAH dipilih user di percakapan.
+2. Angka tanpa evidence dilarang; kalau tidak yakin → abstain + tawarkan petugas.
+3. "batal/cancel/keluar" dan cancel natural membatalkan antrean admin.
+4. Admin yang mengambil alih = bot berhenti membalas.
+5. Saat user minta "data X" di goal baru → pilih offer_candidates, BUKAN query_stat_data.
+6. Bahasa Indonesia, ringkas, tanpa markdown."""
+
+
 def run_llm() -> dict:
+    """Live LLM evaluation of the golden episodes (OQ-05 resolved path).
+
+    Plays each episode turn-by-turn against the configured model
+    (MARAWA_LLM_BASE_URL / MARAWA_LLM_API_KEY / MARAWA_LLM_MODEL). The model
+    only picks an action; numbers and queries stay out of scope of this round.
+    Without configuration the mode stays blocked (CI/dev path).
+    """
+    import os
+
+    base_url = os.environ.get("MARAWA_LLM_BASE_URL") or os.environ.get("PROBE_BASE_URL")
+    api_key = os.environ.get("MARAWA_LLM_API_KEY") or os.environ.get("PROBE_API_KEY")
+    model = os.environ.get("MARAWA_LLM_MODEL")
+
+    if not (base_url and api_key and model):
+        return {
+            "mode": "llm",
+            "status": "blocked",
+            "reason": "OQ-05 unresolved: MARAWA_LLM_BASE_URL/API_KEY/MODEL not configured.",
+            "episodes_total": 0,
+            "exercised_passed": 0,
+        }
+
+    episodes = json.loads(EPISODES_PATH.read_text(encoding="utf-8"))["episodes"]
+    case_rows = []
+    passed_turns = 0
+    total_turns = 0
+    skipped_event_turns = 0
+
+    import re as _re
+
+    for episode in episodes:
+        messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
+        errors: list[str] = []
+        model_turns = 0
+        for index, turn in enumerate(episode["turns"]):
+            total_turns += 1
+            expect = turn["expect"]
+            user_text = turn.get("user")
+            if not user_text:
+                # Event-only turns (idle timeout, handover SLA) are driven by
+                # the session-policy ENGINE, not by a model reading a citizen
+                # message. Calling the LLM with no user input is meaningless
+                # and the fixture classifies them separately in tools mode.
+                skipped_event_turns += 1
+                continue
+            messages.append({"role": "user", "content": user_text})
+            model_turns += 1
+
+            reply, _secs = _llm_round(base_url, api_key, model, messages)
+            if reply is None:
+                errors.append(f"turn {index}: model call failed")
+                continue
+
+            match = _re.search(r"\{.*\}", reply, _re.S)
+            if not match:
+                errors.append(f"turn {index}: reply bukan JSON: {reply[:80]!r}")
+                continue
+            try:
+                action = json.loads(match.group(0)).get("action")
+            except json.JSONDecodeError:
+                errors.append(f"turn {index}: JSON tidak bisa di-parse: {reply[:80]!r}")
+                continue
+
+            expected_action = expect.get("action")
+            if action != expected_action:
+                errors.append(
+                    f"turn {index}: action {action!r}, diharapkan {expected_action!r}"
+                )
+            for forbidden in expect.get("forbidden_effects", []):
+                if forbidden == "free_sql" and action == "query_stat_data":
+                    errors.append(f"turn {index}: free_sql dibutuhkan pemilihan kandidat")
+                if forbidden == "fact_query_before_candidate_selection" and action == "query_stat_data":
+                    errors.append(f"turn {index}: query fakta sebelum kandidat dipilih")
+                if forbidden == "bot_reply_during_admin_queue" and action not in (
+                    "admin_busy_notice", "end_session", "show_service_menu",
+                ):
+                    errors.append(f"turn {index}: bot membalas saat antrean admin")
+
+            if user_text:
+                messages.append({"role": "assistant", "content": reply})
+
+        if model_turns == 0:
+            status = "not_evaluated"
+        elif errors:
+            status = "failed"
+        else:
+            status = "passed"
+        if status == "passed":
+            passed_turns += 1
+        case_rows.append({
+            "episode_id": episode["episode_id"],
+            "status": status,
+            "turns_total": len(episode["turns"]),
+            "model_turns": model_turns,
+            "errors": errors[:5],
+        })
+
+    failed = [c for c in case_rows if c["status"] == "failed"]
+    not_evaluated = [c for c in case_rows if c["status"] == "not_evaluated"]
+
     return {
         "mode": "llm",
-        "status": "blocked",
-        "reason": "OQ-05 unresolved: exact provider/model credentials not configured; "
-                  "live LLM evaluation waits for PRIMARY_MODEL/FALLBACK_MODEL IDs and quota.",
-        "episodes_total": 0,
-        "exercised_passed": 0,
+        "status": "ran" if not failed else "ran_with_failures",
+        "model": model,
+        "base_url": base_url,
+        "episodes_total": len(episodes),
+        "episodes_passed": passed_turns,
+        "episodes_failed": len(failed),
+        "episodes_not_evaluated": len(not_evaluated),
+        "not_evaluated_ids": [c["episode_id"] for c in not_evaluated],
+        "turns_total": total_turns,
+        "skipped_event_turns": skipped_event_turns,
+        "report_note": (
+            "Model hanya memilih ACTION; angka/evidence/query dievaluasi di jalur "
+            "tools. Event-only turns (timeout/handover SLA) di-skip: itu tugas "
+            "session-policy ENGINE, bukan model. Episode pass bila SEMUA "
+            "model-driven turn action-nya cocok."
+        ),
+        "cases": case_rows,
     }
 
 

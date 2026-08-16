@@ -52,8 +52,17 @@ def test_golden_episode_harness_tools_mode() -> None:
 def test_golden_episode_harness_llm_mode_documents_blocker() -> None:
     report = run_llm()
     assert report["mode"] == "llm"
-    assert report["status"] == "blocked"
-    assert "OQ-05" in report["reason"]
+    if report["status"] == "blocked":
+        assert "OQ-05" in report["reason"] or "MARAWA_LLM" in report["reason"]
+    else:
+        # live path (MARAWA_LLM_* configured): report counts must be sane
+        assert report["episodes_total"] == 19
+        assert (
+            report["episodes_passed"]
+            + report["episodes_failed"]
+            + report.get("episodes_not_evaluated", 0)
+            == 19
+        )
 
 
 def test_all_episodes_have_selection_proof_on_fact_queries() -> None:
