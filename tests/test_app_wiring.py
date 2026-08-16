@@ -14,21 +14,23 @@ from fastapi.testclient import TestClient
 from scripts.app import Store, _build_store, app, get_store
 
 
-def test_totp_login_flow_issues_session_and_bearer_works(monkeypatch) -> None:
-    """docs/06 §4: login via TOTP, then Bearer session token at /admin/session.
+def test_password_login_flow_issues_session_and_bearer_works(monkeypatch) -> None:
+    """Login via password (jalur utama sejak 16-Agt-2026), Bearer di /admin/session.
 
     Runs in forced secure mode so X-Admin-Id is NOT accepted here.
     """
     import time as _time
 
+    from scripts.password_auth import hash_password
     from scripts.totp_session import new_totp_secret, totp_at
 
     monkeypatch.setattr("scripts.totp_session._SESSION_KEY", "t" * 64)
     monkeypatch.setattr("scripts.app.session_key_stable", lambda: True)
 
     store = Store()
+    store.admins["seed-super-1"]["password_hash"] = hash_password("rahasia123")
     secret = new_totp_secret()
-    store.totp_secrets["seed-super-1"] = secret
+    store.totp_secrets["seed-super-1"] = secret  # TOTP opsional kedua
     app.dependency_overrides[get_store] = lambda: store
     try:
         client = TestClient(app)
@@ -36,13 +38,12 @@ def test_totp_login_flow_issues_session_and_bearer_works(monkeypatch) -> None:
         # no session + no dev header in secure mode -> 401
         assert client.get("/admin/session").status_code == 401
 
-        # wrong code -> 401
-        bad = client.post("/admin/login", json={"admin_id": "seed-super-1", "totp_code": "000000"})
+        # wrong password -> 401
+        bad = client.post("/admin/login", json={"admin_id": "seed-super-1", "password": "salah123"})
         assert bad.status_code == 401
 
-        # correct code -> token
-        code = totp_at(secret, int(_time.time()) // 30)
-        ok = client.post("/admin/login", json={"admin_id": "seed-super-1", "totp_code": code})
+        # correct password (tanpa TOTP) -> token
+        ok = client.post("/admin/login", json={"admin_id": "seed-super-1", "password": "rahasia123"})
         assert ok.status_code == 200, ok.text
         token = ok.json()["token"]
 
@@ -55,6 +56,25 @@ def test_totp_login_flow_issues_session_and_bearer_works(monkeypatch) -> None:
         # tampered token -> 401
         forged = client.get("/admin/session", headers={"Authorization": f"Bearer {token[:-1]}x"})
         assert forged.status_code == 401
+
+        # TOTP tetap sah bila kode benar (lintasan opsional)
+        code = totp_at(secret, int(_time.time()) // 30)
+        totp_ok = client.post("/admin/login", json={
+            "admin_id": "seed-super-1", "password": "rahasia123", "totp_code": code,
+        })
+        assert totp_ok.status_code == 200, totp_ok.text
+
+        # TOTP salah tetap menolak bila kode diberikan
+        totp_bad = client.post("/admin/login", json={
+            "admin_id": "seed-super-1", "password": "rahasia123", "totp_code": "000000",
+        })
+        assert totp_bad.status_code == 401
+
+        # admin tanpa password_hash tidak bisa login (seragam, tanpa oracle)
+        nohash = client.post("/admin/login", json={"admin_id": "seed-super-2", "password": "apa saja"})
+        assert nohash.status_code == 401
+        unknown = client.post("/admin/login", json={"admin_id": "siapa", "password": "apa saja"})
+        assert unknown.status_code == 401
 
         # enroll via superadmin Bearer
         enroll = client.post(

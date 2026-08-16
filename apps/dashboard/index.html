@@ -287,15 +287,19 @@ button, input, textarea { font: inherit; color: inherit; }
 <div class="login-wrap" id="login_view">
   <form class="login" id="login_form">
     <h1>Masuk panel petugas</h1>
-    <p>Gunakan kode dari aplikasi autentikasi Anda.</p>
+    <p>Gunakan nama pengguna dan kata sandi Anda.</p>
     <div class="field">
       <label for="admin_id">Nama pengguna</label>
       <input id="admin_id" name="username" autocomplete="username" required>
     </div>
     <div class="field">
-      <label for="totp">Kode 6 angka</label>
+      <label for="password">Kata sandi</label>
+      <input id="password" name="password" type="password" autocomplete="current-password" required>
+    </div>
+    <div class="field hidden" id="totp_field">
+      <label for="totp">Kode 6 angka (opsional)</label>
       <input id="totp" name="one-time-code" inputmode="numeric" maxlength="6"
-             autocomplete="one-time-code" pattern="[0-9]{6}" required>
+             autocomplete="one-time-code" pattern="[0-9]{6}">
     </div>
     <button class="btn" type="submit" style="width:100%" id="login_btn">Masuk</button>
     <div class="alert hidden" id="login_err"></div>
@@ -339,6 +343,15 @@ async function api(method, url, body) {
   const data = await res.json().catch(() => ({}));
   if (!res.ok) throw new Error(data.detail || data.message || 'Gagal (' + res.status + ')');
   return data;
+}
+
+async function apiBlob(url) {
+  const res = await fetch(API + url, {
+    headers: { 'Authorization': 'Bearer ' + TOKEN },
+  });
+  if (res.status === 401) { logout(); throw new Error('Sesi berakhir. Masuk kembali.'); }
+  if (!res.ok) throw new Error('Gagal (' + res.status + ')');
+  return res.blob();
 }
 
 /* Lama menunggu dihitung dari saat warga meminta petugas. Timer berdetak
@@ -575,6 +588,11 @@ async function loadSettings() {
     v.innerHTML =
       '<h2>Setelan</h2>' +
       '<p class="lede">Nilai di luar rentang ditolak server, bukan hanya formulir.</p>' +
+      '<div class="panel"><h3 style="margin:0 0 4px;font-family:var(--cond);letter-spacing:.04em">WhatsApp</h3>' +
+        '<p class="lede" style="margin-bottom:10px" id="wa_status">Memeriksa koneksi…</p>' +
+        '<img id="wa_qr" alt="QR pairing" style="display:none;width:220px;height:220px;image-rendering:pixelated;border:1px solid var(--rule);border-radius:8px;background:#fff">' +
+        '<div style="margin-top:10px"><button class="btn ghost" id="wa_refresh">Muat ulang QR</button></div>' +
+      '</div>' +
       '<div class="panel">' + rows +
         '<div style="margin-top:16px;display:flex;gap:10px;align-items:center">' +
         '<button class="btn" id="save_settings">Simpan perubahan</button>' +
@@ -597,9 +615,36 @@ async function loadSettings() {
         'Pemeriksaan kebenaran jawaban hidup di kode dan hanya berubah lewat rilis. ' +
         'Tombol yang bisa mematikannya, cepat atau lambat, akan ditekan saat bot terasa kurang membantu.' +
         '</div></div>';
+    loadWhatsApp();
     loadContacts();
   } catch (e) {
     v.innerHTML = '<h2>Setelan</h2><div class="alert">' + esc(e.message) + '</div>';
+  }
+}
+
+async function loadWhatsApp() {
+  const statusEl = $('wa_status'), img = $('wa_qr');
+  const refreshBtn = $('wa_refresh');
+  if (!statusEl) return;
+  if (refreshBtn) refreshBtn.onclick = loadWhatsApp;
+  try {
+    const s = await api('GET', '/settings/whatsapp');
+    if (s.connected) {
+      statusEl.textContent = 'Terhubung ke WhatsApp. Bot siap melayani warga.';
+      statusEl.style.color = 'var(--bot)';
+      if (img) img.style.display = 'none';
+      return;
+    }
+    statusEl.textContent = 'Belum terhubung. Pindai QR dengan WhatsApp yang dipakai bot:';
+    statusEl.style.color = 'var(--waiting)';
+    if (img && s.qr) {
+      const png = await apiBlob('/settings/whatsapp-qr.png');
+      img.src = URL.createObjectURL(png);
+      img.style.display = 'block';
+    }
+  } catch (e) {
+    statusEl.textContent = 'Tidak dapat memeriksa koneksi: ' + esc(e.message);
+    statusEl.style.color = 'var(--waiting)';
   }
 }
 
@@ -762,7 +807,11 @@ $('login_form').addEventListener('submit', async (ev) => {
   try {
     const res = await fetch(API + '/admin/login', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ admin_id: $('admin_id').value.trim(), totp_code: $('totp').value.trim() }),
+      body: JSON.stringify({
+        admin_id: $('admin_id').value.trim(),
+        password: $('password').value,
+        totp_code: $('totp').value.trim() || null,
+      }),
     });
     const data = await res.json().catch(() => ({}));
     if (!res.ok) {

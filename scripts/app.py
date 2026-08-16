@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse
+from fastapi.responses import FileResponse, JSONResponse, Response
 from pydantic import BaseModel, Field
 
 from scripts.answer_gate import (
@@ -65,6 +65,7 @@ from scripts.scheduler import plan_sweep
 from scripts.notifications import InMemoryChannel, build_channel, dispatch_effects
 from scripts.postgres_store import PostgresStore
 from scripts.phone import InvalidPhone, normalize_phone, display_phone
+from scripts.password_auth import hash_password, verify_password
 from scripts.rate_limit import LOGIN_LIMITER
 from scripts.totp_session import issue_session, new_totp_secret, otpauth_uri, session_key_stable, verify_session, verify_totp
 
@@ -87,8 +88,8 @@ class Store:
         self.outbox: dict[str, SendRecord] = {}
         self.sent_wa_ids: set[str] = set()
         self.admins: dict[str, dict[str, Any]] = {
-            "seed-super-1": {"name": "Superadmin Satu", "role": "superadmin"},
-            "seed-super-2": {"name": "Superadmin Dua", "role": "superadmin"},
+            "seed-super-1": {"name": "Superadmin Satu", "role": "superadmin", "password_hash": None},
+            "seed-super-2": {"name": "Superadmin Dua", "role": "superadmin", "password_hash": None},
         }
         self.settings: dict[str, int] = {
             "citizen_idle_minutes": 5,
@@ -160,6 +161,12 @@ class Store:
 
     def set_totp_secret(self, admin_id: str, secret: str) -> None:
         self.totp_secrets[admin_id] = secret
+
+    def set_setting(self, key: str, value: Any) -> None:
+        self.settings[key] = value
+
+    def get_setting(self, key: str) -> Any:
+        return self.settings.get(key)
 
 
 def _build_store() -> Store:
@@ -278,7 +285,8 @@ def require_superadmin(admin: AdminIdentity = Depends(current_admin)) -> AdminId
 
 class LoginRequest(BaseModel):
     admin_id: str
-    totp_code: str
+    password: str
+    totp_code: str | None = None  # opsional bila admin ter-enroll TOTP
 
 
 @app.post("/admin/login")
@@ -306,19 +314,29 @@ def admin_login(
     def _fail(status: int, detail: str) -> HTTPException:
         for key in keys:
             LOGIN_LIMITER.record_failure(key)
-        # Pesan gagal sengaja tidak membedakan "admin tidak ada" dari "kode
+        # Pesan gagal sengaja tidak membedakan "admin tidak ada" dari "password
         # salah": membedakannya memberi penyerang cara mengetahui admin_id mana
-        # yang nyata sebelum mulai menebak kode.
+        # yang nyata sebelum mulai menebak password.
         return HTTPException(status, detail)
 
     admin = store.admins.get(body.admin_id)
     if admin is None:
         raise _fail(401, "Kredensial tidak valid")
+
+    # Jalur utama: password (permintaan operator 16-Agt-2026). Admin yang
+    # belum punya hash -> login ditolak dengan pesan seragam.
+    stored = admin.get("password_hash")
+    if not stored:
+        raise _fail(401, "Kredensial tidak valid")
+    if not verify_password(body.password, stored):
+        raise _fail(401, "Kredensial tidak valid")
+
+    # Lintasan kedua (opsional): TOTP tetap didukung bila ter-enroll DAN kode
+    # diberikan. Tanpa kode, password cukup — bukan multi-faktor wajib.
     secret = store.totp_secret_for(body.admin_id)
-    if secret is None:
-        raise _fail(401, "Kredensial tidak valid")
-    if not verify_totp(secret, body.totp_code):
-        raise _fail(401, "Kredensial tidak valid")
+    if secret is not None and body.totp_code is not None:
+        if not verify_totp(secret, body.totp_code):
+            raise _fail(401, "Kredensial tidak valid")
 
     for key in keys:
         LOGIN_LIMITER.record_success(key)
@@ -382,14 +400,17 @@ def _is_staff_number(store: Store, conversation_id: str) -> bool:
     Perbandingan SELALU lewat normalize_phone di kedua sisi. Membandingkan
     string mentah adalah cara daftar ini berhenti bekerja tanpa gejala: nomor
     tersimpan `08123`, WhatsApp mengirim `628123`, tidak cocok, tidak ada error.
+
+    FAIL-CLOSED (audit STAFF-005): store yang MENGIKLANKAN dukungan blokir
+    (`blocked_phones` ada) tapi gagal saat dipanggil → exception menjalar ke
+    webhook dan menjadi 503. Petugas yang tidak sengaja dilayani karena lookup
+    error lebih berbahaya daripada webhook sebentar 503. Store dev tanpa
+    method (kembalian None dari getattr) → False, itu bukan kegagalan operasi.
     """
     getter = getattr(store, "blocked_phones", None)
     if getter is None:
         return False
-    try:
-        blocked = getter()
-    except Exception:  # noqa: BLE001
-        return False
+    blocked = getter()  # biarkan exception propagate -> webhook 503
     if not blocked:
         return False
     try:
@@ -463,7 +484,15 @@ async def webhook_whatsapp(
     # menjawabnya sebagai pertanyaan statistik; nomor petugas muncul di papan
     # triase sebagai warga; dan petugas bisa mengetik ADMIN lalu memicu
     # notifikasi ke dirinya sendiri.
-    if _is_staff_number(store, message.conversation_id):
+    #
+    # Fail-closed (STAFF-005): lookup blokir yang error menjadi 503 — bukan
+    # "bukan petugas". Melayani petugas karena lookup rusak lebih berbahaya
+    # daripada menolak webhook sebentar.
+    try:
+        staff = _is_staff_number(store, message.conversation_id)
+    except Exception:  # noqa: BLE001
+        raise HTTPException(503, "Kebijakan petugas tidak bisa diverifikasi") from None
+    if staff:
         _mark_staff(store, message.conversation_id)
         return {"status": "ignored_staff_number", "run_agent": False}
 
@@ -730,6 +759,126 @@ def remove_admin_contact(
     return {"removed": contact_id}
 
 
+class PasswordSetIn(BaseModel):
+    admin_id: str
+    password: str
+
+
+@app.post("/admin/set-password")
+def set_password(
+    body: PasswordSetIn,
+    admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    """Set/reset password admin (superadmin only). Dipakai waktu seed awal."""
+    if len(body.password) < 8:
+        raise HTTPException(422, "Password minimal 8 karakter")
+    setter = getattr(store, "set_admin_password", None)
+    if setter is None:
+        raise HTTPException(501, "Penyimpanan ini belum mendukung password")
+    if not setter(body.admin_id, hash_password(body.password)):
+        raise HTTPException(404, "Admin tidak ditemukan")
+    store.audit("admin_password_set", admin.admin_id, None, {"target": body.admin_id})
+    return {"ok": True}
+
+
+# ------------------------------- Internal key auth (docs/07) -----------------
+
+
+def require_internal_key(
+    x_internal_key: str | None = Header(default=None, alias="X-Internal-Key"),
+) -> None:
+    """Worker↔API channel auth (docs/07). Fail-closed: tanpa MARAWA_INTERNAL_KEY
+    di environment, semua panggilan internal ditolak (503) — bukan dibiarkan
+    terbuka seperti path segment 'internal' yang menyesatkan."""
+    key = os.environ.get("MARAWA_INTERNAL_KEY")
+    if not key:
+        raise HTTPException(503, "Internal channel belum dikonfigurasi")
+    if not x_internal_key or not hmac.compare_digest(key, x_internal_key):
+        raise HTTPException(401, "Internal key tidak valid")
+
+
+class QrPushIn(BaseModel):
+    qr: str
+    expires_at: datetime
+
+
+class ConnPushIn(BaseModel):
+    state: str
+
+
+@app.post("/internal/whatsapp-qr")
+def internal_whatsapp_qr(
+    body: QrPushIn,
+    _key: None = Depends(require_internal_key),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    setter = getattr(store, "set_setting", None)
+    if setter is None:
+        return {"ok": False}
+    setter("wa_qr", {
+        "qr": body.qr,
+        "expires_at": body.expires_at.isoformat(),
+        "pushed_at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True}
+
+
+@app.post("/internal/whatsapp-connection")
+def internal_whatsapp_connection(
+    body: ConnPushIn,
+    _key: None = Depends(require_internal_key),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    setter = getattr(store, "set_setting", None)
+    if setter is None:
+        return {"ok": False}
+    if body.state not in ("open", "closed", "connecting"):
+        raise HTTPException(422, "state harus open/closed/connecting")
+    setter("wa_connection", {
+        "state": body.state,
+        "at": datetime.now(timezone.utc).isoformat(),
+    })
+    return {"ok": True}
+
+
+@app.get("/settings/whatsapp")
+def get_whatsapp_status(
+    _admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    """Status koneksi + QR pairing terbaru — ditampilkan dashboard."""
+    qr = getattr(store, "get_setting", lambda k: None)("wa_qr")
+    conn = getattr(store, "get_setting", lambda k: None)("wa_connection")
+    return {
+        "qr": (qr or {}).get("qr"),
+        "qr_expires_at": (qr or {}).get("expires_at"),
+        "connected": bool(conn and conn.get("state") == "open"),
+        "connection_state": (conn or {}).get("state", "unknown"),
+    }
+
+
+@app.get("/settings/whatsapp-qr.png")
+def get_whatsapp_qr_png(
+    _admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> Any:
+    """QR sebagai PNG supaya dashboard bisa render tanpa lib QR client-side."""
+    qr = getattr(store, "get_setting", lambda k: None)("wa_qr")
+    payload = (qr or {}).get("qr")
+    if not payload:
+        raise HTTPException(404, "QR belum tersedia")
+    try:
+        import qrcode  # type: ignore
+        from io import BytesIO
+        img = qrcode.make(payload)
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        return Response(buffer.getvalue(), media_type="image/png")
+    except ImportError:
+        raise HTTPException(503, "qrcode tidak terpasang") from None
+
+
 @app.get("/settings/agent")
 def get_agent_settings(_admin: AdminIdentity = Depends(require_superadmin)) -> dict[str, Any]:
     # AGENT.md §3B: no toggle here ever disables the answer_gate. This endpoint
@@ -784,19 +933,6 @@ def get_audit_log(
 
 
 # ------------------------------- Sweep (docs/06 §0.9/0.10) -------------------
-
-
-def require_internal_key(
-    x_internal_key: str | None = Header(default=None, alias="X-Internal-Key"),
-) -> None:
-    """Worker↔API channel auth (docs/07). Fail-closed: tanpa MARAWA_INTERNAL_KEY
-    di environment, semua panggilan internal ditolak (503) — bukan dibiarkan
-    terbuka seperti path segment 'internal' yang menyesatkan."""
-    key = os.environ.get("MARAWA_INTERNAL_KEY")
-    if not key:
-        raise HTTPException(503, "Internal channel belum dikonfigurasi")
-    if not x_internal_key or not hmac.compare_digest(key, x_internal_key):
-        raise HTTPException(401, "Internal key tidak valid")
 
 
 @app.post("/internal/outbox/claim")

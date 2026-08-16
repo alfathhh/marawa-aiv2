@@ -84,15 +84,21 @@ async function main() {
     if (qr) {
       console.log('[marawa-worker] Pairing: scan QR ini dengan WhatsApp Anda:');
       qrcode.generate(qr, { small: true });
+      const expires = new Date(Date.now() + 60_000).toISOString();
+      apiPost('/internal/whatsapp-qr', { qr, expires_at: expires }).catch(() => {});
     }
     if (connection === 'close') {
       const code = lastDisconnect?.error?.output?.statusCode;
       const shouldReconnect = code !== DisconnectReason.loggedOut;
       console.log(`[marawa-worker] koneksi tertutup (${code}); reconnect=${shouldReconnect}`);
+      apiPost('/internal/whatsapp-connection', { state: 'closed' }).catch(() => {});
       if (shouldReconnect) setTimeout(main, 3000);
       else process.exit(0);
     }
-    if (connection === 'open') console.log('[marawa-worker] WhatsApp terhubung.');
+    if (connection === 'open') {
+      console.log('[marawa-worker] WhatsApp terhubung.');
+      apiPost('/internal/whatsapp-connection', { state: 'open' }).catch(() => {});
+    }
   });
 
   sock.ev.on('creds.update', saveCreds);

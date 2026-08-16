@@ -284,8 +284,33 @@ class PostgresStore:
     @property
     def admins(self) -> dict[str, dict[str, Any]]:
         with self._connect() as conn, conn.cursor() as cur:
-            cur.execute("SELECT admin_id, name, role FROM marawa_admins WHERE active")
+            cur.execute(
+                "SELECT admin_id, name, role, password_hash "
+                "FROM marawa_admins WHERE active"
+            )
             return {r["admin_id"]: r for r in cur.fetchall()}
+
+    def set_admin_password(self, admin_id: str, password_hash: str) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE marawa_admins SET password_hash=%s WHERE admin_id=%s",
+                (password_hash, admin_id),
+            )
+            return cur.rowcount == 1
+
+    def set_setting(self, key: str, value: Any) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO marawa_settings (key, value, updated_by) VALUES (%s, %s, %s) "
+                "ON CONFLICT (key) DO UPDATE SET value=EXCLUDED.value",
+                (key, Jsonb(value), "system"),
+            )
+
+    def get_setting(self, key: str) -> Any:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT value FROM marawa_settings WHERE key=%s", (key,))
+            row = cur.fetchone()
+            return row["value"] if row else None
 
     @property
     def settings(self) -> dict[str, int]:

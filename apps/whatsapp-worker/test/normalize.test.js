@@ -64,6 +64,34 @@ test('signWebhook matches deterministic hex', () => {
   assert.match(sig, /^[0-9a-f]{64}$/);
 });
 
+test('uses phone number (remoteJidAlt) when Baileys v7 sends a LID', () => {
+  const out = normalizeMessage({
+    type: 'notify',
+    messages: [{
+      key: {
+        remoteJid: '1234567890@lid',
+        remoteJidAlt: '628123456789@s.whatsapp.net',
+        id: 'XYZ', fromMe: false,
+      },
+      message: { conversation: 'oke saya cek' },
+      messageTimestamp: 1700000000,
+    }],
+  });
+  assert.equal(out.conversation_id, '628123456789@s.whatsapp.net');
+});
+
+test('falls back to remoteJid when no alt is present', () => {
+  const out = normalizeMessage({
+    type: 'notify',
+    messages: [{
+      key: { remoteJid: '628123456789@s.whatsapp.net', id: 'ABC', fromMe: false },
+      message: { conversation: 'halo' },
+      messageTimestamp: 1700000000,
+    }],
+  });
+  assert.equal(out.conversation_id, '628123456789@s.whatsapp.net');
+});
+
 test('collapse trims and squeezes whitespace', () => {
   assert.equal(collapse(' a\n\n b\t c '), 'a b c');
   assert.equal(collapse(''), '');

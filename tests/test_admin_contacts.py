@@ -145,6 +145,37 @@ def test_store_without_blocklist_support_does_not_crash():
     assert _is_staff_number(Bare(), "628123456789") is False
 
 
+def test_staff_policy_lookup_failure_fails_closed():
+    """Store yang mengiklankan blocked_phones tapi error saat dipanggil harus
+    menjalar (webhook → 503), BUKAN dianggap 'bukan petugas'."""
+
+    from scripts.app import app, get_store
+    from scripts.notifications import InMemoryChannel
+
+    class BrokenStore:
+        def __init__(self):
+            self.notification_channel = InMemoryChannel()
+            self.pairing_cutoff_ts = None
+            self.webhook_secret = None
+
+        def blocked_phones(self):
+            raise RuntimeError("DB hilang")
+
+    app.dependency_overrides[get_store] = lambda: BrokenStore()
+    try:
+        client = TestClient(app)
+        res = client.post("/webhook/whatsapp", json={
+            "conversation_id": "628123456789@s.whatsapp.net",
+            "wa_message_id": "wa_failclosed",
+            "from_me": False,
+            "body": "halo",
+            "timestamp": datetime.now(timezone.utc).isoformat(),
+            "admin_id": None,
+        })
+        assert res.status_code == 503, res.text
+    finally:
+        app.dependency_overrides.clear()
+
 # ── End-to-end lewat HTTP ──
 
 @pytest.mark.skipif(not DSN, reason="MARAWA_TEST_DSN not set")

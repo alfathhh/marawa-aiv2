@@ -21,8 +21,8 @@ from scripts.conversation_state import ConversationState, Settings, should_notif
 
 
 class NotificationChannel(Protocol):
-    def send_to_officer_group(self, text: str) -> None: ...
-    def send_to_citizen(self, conversation_id: str, text: str) -> None: ...
+    def send_to_officer_group(self, text: str) -> bool: ...
+    def send_to_citizen(self, conversation_id: str, text: str) -> bool: ...
 
 
 @dataclass
@@ -32,11 +32,13 @@ class InMemoryChannel:
     officer_messages: list[str] = field(default_factory=list)
     citizen_messages: list[tuple[str, str]] = field(default_factory=list)
 
-    def send_to_officer_group(self, text: str) -> None:
+    def send_to_officer_group(self, text: str) -> bool:
         self.officer_messages.append(text)
+        return True
 
-    def send_to_citizen(self, conversation_id: str, text: str) -> None:
+    def send_to_citizen(self, conversation_id: str, text: str) -> bool:
         self.citizen_messages.append((conversation_id, text))
+        return True
 
 
 QUEUE_NOTICE_TEMPLATE = "🔔 1 chat menunggu petugas — buka dashboard untuk membalas.\n{conversation_id}"
@@ -64,10 +66,12 @@ def dispatch_effects(
 
     if "notify_officers" in effects:
         if should_notify_officers(conversation, now, settings):
-            channel.send_to_officer_group(
-                QUEUE_NOTICE_TEMPLATE.format(conversation_id=conversation.conversation_id)
+            notified = (
+                channel.send_to_officer_group(
+                    QUEUE_NOTICE_TEMPLATE.format(conversation_id=conversation.conversation_id)
+                )
+                is True
             )
-            notified = True
         # Debounce means "no send this time" — this is not a failure, so no
         # violation/log is raised here. The caller updates last_notified_at
         # only when `notified` is True (see app.py wiring).
@@ -117,18 +121,21 @@ class FanoutChannel:
         except Exception:  # noqa: BLE001
             return []
 
-    def send_to_officer_group(self, text: str) -> None:
+    def send_to_officer_group(self, text: str) -> bool:
         if not self.enabled:
-            return
+            return False
         recipients = self._recipients()
         if not recipients:
             _log_no_recipients()
-            return
+            return False
+        sent_any = False
         for phone in recipients:
-            _enqueue_via(self.store, f"{phone}@s.whatsapp.net", text, "system")
+            if _enqueue_via(self.store, f"{phone}@s.whatsapp.net", text, "system"):
+                sent_any = True
+        return sent_any
 
-    def send_to_citizen(self, conversation_id: str, text: str) -> None:
-        _enqueue_via(self.store, conversation_id, text, "bot")
+    def send_to_citizen(self, conversation_id: str, text: str) -> bool:
+        return _enqueue_via(self.store, conversation_id, text, "bot")
 
 
 _NO_RECIPIENT_LOGGED = False
@@ -227,17 +234,17 @@ class OutboxChannel:
             return False
         return bool(enqueue(record))
 
-    def send_to_officer_group(self, text: str) -> None:
+    def send_to_officer_group(self, text: str) -> bool:
         if not self.enabled or not self.officer_group_id:
             # Tidak dikonfigurasi bukan keadaan normal: panel yang tidak pernah
             # memberi tahu siapa pun adalah panel yang tidak dibuka. Dicatat
             # keras supaya ketahuan saat pemeriksaan, bukan ditelan diam-diam.
             _log_missing_officer_group()
-            return
-        self._enqueue(self.officer_group_id, text, "system")
+            return False
+        return self._enqueue(self.officer_group_id, text, "system")
 
-    def send_to_citizen(self, conversation_id: str, text: str) -> None:
-        self._enqueue(conversation_id, text, "bot")
+    def send_to_citizen(self, conversation_id: str, text: str) -> bool:
+        return self._enqueue(conversation_id, text, "bot")
 
 
 _MISSING_LOGGED = False

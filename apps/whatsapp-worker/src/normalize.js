@@ -17,8 +17,14 @@ export function normalizeMessage(event) {
   const text = extractText(msg.message);
   if (text === null) return null; // non-text content (images, audio, ...)
 
+  // Baileys v7: remoteJid may be a LID (linked identity, ends @lid). For
+  // direct messages the phone number (PN) lives in remoteJidAlt — the staff
+  // filter and conversation identity must key on the PN, not the LID, or
+  // officer numbers silently bypass the blocklist.
+  const jid = key.remoteJidAlt || key.remoteJid;
+
   return {
-    conversation_id: key.remoteJid,
+    conversation_id: jid,
     wa_message_id: key.id || null,
     from_me: !!key.fromMe,
     body: collapse(text),
