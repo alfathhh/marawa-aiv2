@@ -312,12 +312,20 @@ def run_llm() -> dict:
     total_turns = 0
     skipped_event_turns = 0
 
+    from scripts.action_masking import (
+        allowed_actions as allowed_actions_check,
+        apply_action,
+        mask_prompt_line,
+    )
+
     import re as _re
 
     for episode in episodes:
         messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
         errors: list[str] = []
         model_turns = 0
+        state = "BOT_ACTIVE"
+        has_selected = False
         for index, turn in enumerate(episode["turns"]):
             total_turns += 1
             expect = turn["expect"]
@@ -329,7 +337,8 @@ def run_llm() -> dict:
                 # and the fixture classifies them separately in tools mode.
                 skipped_event_turns += 1
                 continue
-            messages.append({"role": "user", "content": user_text})
+            masked = mask_prompt_line(state, has_selected)
+            messages.append({"role": "user", "content": f"{user_text}\n\n{masked}"})
             model_turns += 1
 
             reply, _secs = _llm_round(base_url, api_key, model, messages)
@@ -348,10 +357,17 @@ def run_llm() -> dict:
                 continue
 
             expected_action = expect.get("action")
+            valid = action in allowed_actions_check(state, has_selected) if action else False
             if action != expected_action:
                 errors.append(
                     f"turn {index}: action {action!r}, diharapkan {expected_action!r}"
                 )
+            if not valid:
+                errors.append(
+                    f"turn {index}: action {action!r} TIDAK diizinkan masking pada "
+                    f"state {state!r} (has_selected={has_selected})"
+                )
+            state, has_selected = apply_action(state, action, has_selected)
             for forbidden in expect.get("forbidden_effects", []):
                 if forbidden == "free_sql" and action == "query_stat_data":
                     errors.append(f"turn {index}: free_sql dibutuhkan pemilihan kandidat")
