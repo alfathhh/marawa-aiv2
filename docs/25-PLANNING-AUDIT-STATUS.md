@@ -590,10 +590,12 @@ Cloudflare. Status:
 - **Verifikasi live**: migrasi 010 UP→DOWN→UP isolated; login password
   `seed-super-1` 200 + `/admin/session` 200; QR smoke (push → GET → PNG 290x290
   asli); full suite **385/385 py + 9/9 node PASS**.
-- **DNS Cloudflare**: `CLOUDFLARE_API_TOKEN` di environment **invalid**
-  (revoked) — setting DNS tidak bisa dieksekusi dari sini sampai token zona
-  yang valid diberikan. Blocker eksternal yang tersisa: DNS + pairing QR (QR
-  sudah tampil di dashboard, tinggal di-scan).
+- **DNS Cloudflare — RESOLVED**: `cfat_` token format baru valid; record
+  `marawa.hatafisme.web.id` dipindah ke `43.133.153.252` (proxied off);
+  **`https://marawa.hatafisme.web.id` LIVE** — Caddy cert OK, /admin 200,
+  no-auth 401, login password 200, QR PNG 200. Kredensial disimpan
+  `/etc/marawa/cloudflare.env` (0600, di luar repo). Blocker eksternal yang
+  tersisa: scan QR pairing (tinggal buka dashboard) + OQ-07/unit review BPS.
 - Password seed `seed-super-1` disimpan `/etc/marawa/admin-passwords.txt`
   (0600). Git: `bbf27a7` (remediasi-20260816-6).
 
