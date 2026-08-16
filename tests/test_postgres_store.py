@@ -148,3 +148,60 @@ def test_sweep_query_excludes_closed_conversations(store, cid):
         store.compare_and_set(0, closed.state)
         ids = {c.conversation_id for c in store.conversations_needing_sweep()}
         assert cid not in ids
+
+
+def _backdate_past_retention(store, cid, days: int = 400) -> None:
+    import psycopg
+
+    with psycopg.connect(DSN) as conn, conn.cursor() as cur:
+        old = NOW - timedelta(days=days)
+        cur.execute(
+            "UPDATE marawa_messages SET created_at=%s WHERE conversation_id=%s",
+            (old, cid),
+        )
+        cur.execute(
+            "UPDATE marawa_conversations SET last_activity_at=%s, state='IDLE_CLOSED' "
+            "WHERE conversation_id=%s",
+            (old, cid),
+        )
+
+
+def test_retention_deletes_expired_messages_and_empty_closed_conversation(store, cid):
+    store.get_conversation(cid)
+    store.append_message(cid, "in", "user", "Sesuatu yang sensitif", wa_message_id=uuid.uuid4().hex)
+    _backdate_past_retention(store, cid)
+
+    deleted = store.apply_retention()
+
+    assert deleted["messages"] >= 1
+    # the freshly-created test conversation is IDLE_CLOSED, old, and empty now
+    assert deleted["conversations"] >= 1
+    assert store.get_conversation(cid).conversation_id == cid  # recreated fresh
+
+
+def test_retention_keeps_recent_messages_and_inflight_outbox(store, cid):
+    import psycopg
+
+    store.get_conversation(cid)
+    store.append_message(cid, "in", "user", "Pertanyaan baru hari ini", wa_message_id=uuid.uuid4().hex)
+    store.enqueue_outbox(SendRecord(
+        outbox_id=uuid.uuid4().hex, conversation_id=cid, body="balasan",
+        sender_type="bot", state_version_at_enqueue=0, status=SendStatus.PENDING,
+        idempotency_key=f"cli_{uuid.uuid4().hex}",
+    ))
+    with psycopg.connect(DSN) as conn, conn.cursor() as cur:
+        cur.execute("UPDATE marawa_outbox SET created_at=%s WHERE conversation_id=%s",
+                    (NOW - timedelta(days=400), cid))
+
+    deleted = store.apply_retention()
+
+    # the specific fresh message and inflight row must survive the sweep;
+    # global zero-counts would break on accumulated data from other tests.
+    kept = [m for m in store.messages(cid) if m["body"] == "Pertanyaan baru hari ini"]
+    assert len(kept) == 1
+    import psycopg
+    with psycopg.connect(DSN) as conn, conn.cursor() as cur:
+        cur.execute(
+            "SELECT status FROM marawa_outbox WHERE conversation_id=%s", (cid,),
+        )
+        assert {r[0] for r in cur.fetchall()} == {"pending"}

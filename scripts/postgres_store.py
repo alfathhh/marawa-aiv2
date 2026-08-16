@@ -26,7 +26,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import fields
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 import psycopg
@@ -328,6 +328,47 @@ class PostgresStore:
                 "VALUES (%s,%s,%s,%s)",
                 (action, admin_id, conversation_id, Jsonb(detail)),
             )
+
+    # -- retention (365-day policy, 16 Aug 2026 decision; docs/15 note) --------
+
+    def apply_retention(self, retention_days: int = 365) -> dict[str, int]:
+        """Delete raw chat data older than the retention window.
+
+        Returns deleted-row counts per table. Deliberately conservative:
+        - messages: raw transcripts (PII) past the window;
+        - outbox: terminal rows past the window (pending/claimed never deleted —
+          they may still be in flight);
+        - conversations: IDLE_CLOSED conversations past the window that have no
+          remaining messages (the contact hash lives here; erase only when the
+          conversation is done AND empty);
+        - audit log: NOT touched. Append-only by grant stays true; operational
+          audit volume is small and its retention is a separate policy question.
+        """
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        deleted: dict[str, int] = {}
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "DELETE FROM marawa_messages WHERE created_at < %s",
+                (cutoff,),
+            )
+            deleted["messages"] = cur.rowcount
+            cur.execute(
+                "DELETE FROM marawa_outbox WHERE created_at < %s "
+                "AND status IN ('sent','delivered','failed','cancelled')",
+                (cutoff,),
+            )
+            deleted["outbox"] = cur.rowcount
+            cur.execute(
+                "DELETE FROM marawa_conversations c WHERE state = 'IDLE_CLOSED' "
+                "AND last_activity_at < %s "
+                "AND NOT EXISTS (SELECT 1 FROM marawa_messages m "
+                "                 WHERE m.conversation_id = c.conversation_id) "
+                "AND NOT EXISTS (SELECT 1 FROM marawa_outbox o "
+                "                 WHERE o.conversation_id = c.conversation_id)",
+                (cutoff,),
+            )
+            deleted["conversations"] = cur.rowcount
+        return deleted
 
     @property
     def audit_log(self) -> list[dict[str, Any]]:

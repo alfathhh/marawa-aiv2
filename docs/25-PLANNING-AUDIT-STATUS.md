@@ -166,7 +166,8 @@ The following pre-migration statements were stale and have been corrected in the
 - ✅ **`scripts/postgres_store.py`** (339 baris): CAS `UPDATE … WHERE state_version` (lost-update lintas proses), `FOR UPDATE SKIP LOCKED` claim batch (stale 120s), `ON CONFLICT DO NOTHING` first-contact, sweep tanpa `IDLE_CLOSED`. **11/11 tes lawan DB nyata** termasuk lost-update antar-koneksi terpisah.
 - ✅ **Bug U** — `SendRecord.sender_admin_id` ditambah (sebelumnya hanya di `OutboxEntry`; guard `reassigned_to_other_admin` di `authorize_send` mustahil menyala di jalur nyata → balasan admin yang sudah dilepas tetap terkirim).
 - ✅ **CHECK constraint terbukti di DB** — INSERT measure `queryable=true + unit_source='title_matched'` → `ERROR … violates check constraint measure_registry_queryable_requires_unit`.
-- ⏭️ **Berikutnya (dari laporan internal, sengaja belum dikerjakan):** `app.py` belum pakai `PostgresStore` (DI masih `Store` in-memory); Baileys; dashboard UI; auth TOTP; retensi 365 hari; probe OQ-05.
+- ✅ **Retensi 365 hari (#5)**: `PostgresStore.apply_retention(retention_days=365)` — hapus `marawa_messages` > window, outbox terminal > window (pending/claimed tidak pernah), percakapan `IDLE_CLOSED` kosong > window; `marawa_audit_log` dikecualikan (append-only). Paragraf keputusan OQ-11 ditulis di `docs/15`. 2 tes lawan DB nyata (hapus yang kedaluwarsa; simpan yang fresh + in-flight). **328 PASS**.
+- ✅ **DI `app.py` → `PostgresStore`** via `MARAWA_RUNTIME_DSN` (fallback in-memory untuk dev/test); test env-switch dua arah. Diuji 326 PASS (315+11 dengan DSN).
 
 ### Resolved hari ini (batch keempat — remediasi bundle 16 Aug)
 

@@ -39,6 +39,19 @@ Keputusan "tidak perlu approval" dihormati, dan memang tidak dibutuhkan proses
 formal. Tetapi tetap tulis **satu paragraf** di dokumen internal: apa yang
 disimpan, berapa lama, untuk apa, siapa yang memutuskan, tanggal berapa.
 
+**Paragraf keputusan (ditutup 16 Aug 2026):** MARAWA menyimpan transkrip pesan
+mentah (`marawa_messages`, berisi nomor hash kontak + isi percakapan), antrean
+outbox ber-status akhir, dan baris percakapan `IDLE_CLOSED` yang telah kosong
+selama **365 hari**, lalu menghapusnya otomatis via
+`PostgresStore.apply_retention()` pada sweep harian. Tujuan masa simpan: audit
+layanan dan penanganan tindak lanjut dalam jendela satu tahun; seluruh metrik
+analitik diturunkan saat pesan masuk sebagai agregat tanpa nomor (`docs/09`
+§10) sehingga tidak ada nilai analitik yang hilang saat transkrip dihapus.
+Log audit operasional (`marawa_audit_log`, append-only) dikecualikan dari
+penghapusan otomatis; kebijakan retensinya diputuskan terpisah. Diputuskan
+operator (Tah) 16 Agustus 2026 berdasarkan rekomendasi audit `docs/09` §10 dan
+kerangka UU 27/2022 (pembatasan retensi sebelum pemrosesan).
+
 Alasannya bukan birokrasi. Ini menyimpan nomor WhatsApp dan percakapan warga
 selama setahun atas nama instansi pemerintah. Kalau suatu saat ada insiden atau
 pertanyaan, satu paragraf itu adalah bedanya antara "ini keputusan yang diambil
