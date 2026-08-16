@@ -1,0 +1,1052 @@
+{
+  "version": "planning-v1",
+  "description": "Golden multi-turn query episodes (incl. service menu, admin handover, session timeout, agent-first natural intent). Effect-level planning expectations, not model transcripts.",
+  "episodes": [
+    {
+      "episode_id": "bps-dialog-001",
+      "title": "Jumlah penduduk berdasarkan kecamatan",
+      "tags": [
+        "probing",
+        "breakdown",
+        "follow-up"
+      ],
+      "turns": [
+        {
+          "user": "jumlah penduduk berdasarkan kecamatan",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "candidate_refs": [
+              "S1",
+              "D1",
+              "C1"
+            ],
+            "recommended_ref": "D1",
+            "selection_prompt": "pilih sumber/tabel dahulu",
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_candidate_selection",
+              "auto_select_recommended_candidate",
+              "full_catalog_to_model"
+            ]
+          }
+        },
+        {
+          "user": "D1",
+          "expect": {
+            "action": "clarify",
+            "new_goal": false,
+            "query_facts": false,
+            "selected_ref": "D1",
+            "missing_slots": [
+              "period"
+            ],
+            "must_not_ask": [
+              "indicator",
+              "geography_level",
+              "gender"
+            ],
+            "question_semantics": "exact_or_latest_period",
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_period_resolution",
+              "change_selected_candidate"
+            ]
+          }
+        },
+        {
+          "user": "terbaru",
+          "expect": {
+            "action": "query_stat_data",
+            "new_goal": false,
+            "query_facts": true,
+            "selection_source": "candidate_set_ref",
+            "candidate": {
+              "source_family": "dynamic",
+              "source_resource_id": "29"
+            },
+            "query_spec": {
+              "period": {
+                "mode": "latest",
+                "values": []
+              },
+              "geography": {
+                "mode": "breakdown",
+                "level": "kecamatan"
+              },
+              "dimension_filters": {
+                "jenis_kelamin": [
+                  "total"
+                ]
+              },
+              "operation": "list"
+            },
+            "expected_result": {
+              "period": "2025",
+              "coverage": {
+                "returned": 17,
+                "expected": 17
+              },
+              "sum": 467038,
+              "unit": "jiwa"
+            },
+            "forbidden_effects": [
+              "free_sql",
+              "include_kabupaten_in_subdistrict_ranking",
+              "silent_gender_guess"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-002",
+      "title": "Broad population request with candidates",
+      "tags": [
+        "candidate-offering",
+        "probing",
+        "source-choice"
+      ],
+      "turns": [
+        {
+          "user": "data penduduk dong",
+          "expect": {
+            "action": "offer_candidates",
+            "recommended_ref": "D1",
+            "source_groups": [
+              "simdasi",
+              "dynamic",
+              "census",
+              "publication"
+            ],
+            "max_items_per_group": 3,
+            "accept_natural_choice": true,
+            "forbidden_effects": [
+              "free_sql",
+              "full_catalog_to_model",
+              "rigid_menu_only"
+            ],
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true
+          }
+        },
+        {
+          "user": "yang umur",
+          "expect": {
+            "action": "resolve_or_clarify_candidates",
+            "candidate_concepts": [
+              "kelompok umur",
+              "jenis kelamin"
+            ],
+            "forbidden_effects": [
+              "free_sql",
+              "reuse_wrong_candidate",
+              "ignore_period_coverage"
+            ],
+            "query_facts": false
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-003",
+      "title": "Publication pagination keeps stable refs",
+      "tags": [
+        "pagination",
+        "publication"
+      ],
+      "turns": [
+        {
+          "user": "publikasi tentang penduduk",
+          "expect": {
+            "action": "offer_candidates",
+            "candidate_refs": [
+              "P1",
+              "P2",
+              "P3"
+            ],
+            "focused_family": "publication",
+            "forbidden_effects": [
+              "free_sql",
+              "expose_cursor",
+              "invent_publication_url"
+            ],
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true
+          }
+        },
+        {
+          "user": "lanjut publikasi",
+          "expect": {
+            "action": "candidate_page",
+            "candidate_refs": [
+              "P4",
+              "P5",
+              "P6"
+            ],
+            "old_refs_unchanged": true,
+            "forbidden_effects": [
+              "free_sql",
+              "renumber_old_refs",
+              "duplicate_resource_id"
+            ],
+            "query_facts": false
+          }
+        },
+        {
+          "user": "yang kedua halaman tadi",
+          "expect": {
+            "action": "resolve_candidate",
+            "display_ref": "P5",
+            "forbidden_effects": [
+              "free_sql",
+              "resolve_against_page_one",
+              "guess_without_page_history"
+            ],
+            "query_facts": false
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-004",
+      "title": "Dynamic and SIMDASI precision comparison",
+      "tags": [
+        "source-comparison",
+        "precision",
+        "follow-up"
+      ],
+      "turns": [
+        {
+          "user": "penduduk 2025 berapa?",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "candidate_refs": [
+              "S1",
+              "D1",
+              "C1"
+            ],
+            "recommended_ref": "D1",
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_candidate_selection",
+              "auto_select_recommended_candidate",
+              "use_census_2010_as_current"
+            ]
+          }
+        },
+        {
+          "user": "D1",
+          "expect": {
+            "action": "query_stat_data",
+            "new_goal": false,
+            "query_facts": true,
+            "selection_source": "candidate_set_ref",
+            "expected_value": 467038,
+            "unit": "jiwa",
+            "forbidden_effects": [
+              "free_sql",
+              "omit_source",
+              "change_selected_candidate"
+            ]
+          }
+        },
+        {
+          "user": "ada versi simdasi?",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": false,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "candidate_refs": [
+              "S1"
+            ],
+            "forbidden_effects": [
+              "free_sql",
+              "auto_query_alternative_source",
+              "average_sources"
+            ]
+          }
+        },
+        {
+          "user": "S1",
+          "expect": {
+            "action": "compare_sources",
+            "new_goal": false,
+            "query_facts": true,
+            "selection_source": "candidate_set_ref",
+            "expected_values": [
+              {
+                "source": "dynamic",
+                "value_jiwa": 467038
+              },
+              {
+                "source": "simdasi",
+                "value_jiwa": 467000
+              }
+            ],
+            "equivalent_at_simdasi_precision": true,
+            "forbidden_effects": [
+              "free_sql",
+              "declare_false_conflict",
+              "average_sources"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-005",
+      "title": "PDRB material probing",
+      "tags": [
+        "quarterly",
+        "probing",
+        "pdrb"
+      ],
+      "turns": [
+        {
+          "user": "data PDRB terbaru",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "candidate_refs": [
+              "D1",
+              "S1",
+              "S2"
+            ],
+            "recommended_ref": "D1",
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_candidate_selection",
+              "auto_select_recommended_candidate"
+            ]
+          }
+        },
+        {
+          "user": "D1",
+          "expect": {
+            "action": "clarify",
+            "new_goal": false,
+            "query_facts": false,
+            "selected_ref": "D1",
+            "material_slots": [
+              "annual_or_quarterly",
+              "approach",
+              "price_basis"
+            ],
+            "ask_at_most_one_slot": true,
+            "forbidden_effects": [
+              "free_sql",
+              "choose_adhb_or_adhk_silently",
+              "legacy_dynamic_view",
+              "fact_query_before_slot_resolution"
+            ]
+          }
+        },
+        {
+          "user": "triwulanan pengeluaran harga berlaku Q2",
+          "expect": {
+            "action": "query_stat_data",
+            "new_goal": false,
+            "query_facts": true,
+            "selection_source": "candidate_set_ref",
+            "source_resource_id": "398",
+            "subperiod": "Triwulan II",
+            "unit": "miliar rupiah",
+            "forbidden_effects": [
+              "free_sql",
+              "legacy_dynamic_view",
+              "drop_subperiod",
+              "change_selected_candidate"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-006",
+      "title": "Census cross-tab with metadata-only newer events",
+      "tags": [
+        "census-cross-tab",
+        "candidate-offering",
+        "answerability"
+      ],
+      "turns": [
+        {
+          "user": "penduduk sensus berdasarkan jenis kelamin",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "candidate_refs": [
+              "C1",
+              "C2"
+            ],
+            "answerable_ref": "C1",
+            "metadata_only_events": [
+              "sp2020",
+              "sp2022"
+            ],
+            "forbidden_effects": [
+              "free_sql",
+              "query_metadata_only_event",
+              "hide_event_year",
+              "auto_select_recommended_candidate"
+            ]
+          }
+        },
+        {
+          "user": "C1",
+          "expect": {
+            "action": "inspect_dataset",
+            "new_goal": false,
+            "query_facts": false,
+            "selected_ref": "C1",
+            "dataset": "sp2010:10",
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_dimension_resolution"
+            ]
+          }
+        },
+        {
+          "user": "yang SP2010 per kecamatan",
+          "expect": {
+            "action": "query_stat_data",
+            "new_goal": false,
+            "query_facts": true,
+            "selection_source": "candidate_set_ref",
+            "dataset": "sp2010:10",
+            "geography_mode": "breakdown",
+            "resolved_total_dimension": "perkotaan_perdesaan",
+            "expected_grand_total": 391056,
+            "forbidden_effects": [
+              "free_sql",
+              "omit_category_filter",
+              "use_canonical_code_without_alias_mapping"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-007",
+      "title": "Natural topic correction for schools",
+      "tags": [
+        "candidate-offering",
+        "probing",
+        "topic-correction"
+      ],
+      "turns": [
+        {
+          "user": "data sekolah",
+          "expect": {
+            "action": "offer_candidates",
+            "clusters": [
+              "education_outcome",
+              "facility_count",
+              "students_teachers"
+            ],
+            "forbidden_effects": [
+              "free_sql",
+              "rank_by_fts_only",
+              "assume_harapan_lama_sekolah"
+            ],
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "clustered": true
+          }
+        },
+        {
+          "user": "bukan pendidikan, jumlah SD per kecamatan",
+          "expect": {
+            "action": "rerank_candidates",
+            "preferred_source_resource_ids": [
+              "230",
+              "4.1.3"
+            ],
+            "forbidden_effects": [
+              "free_sql",
+              "force_old_menu",
+              "retain_wrong_concept"
+            ],
+            "query_facts": false
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-008",
+      "title": "Typo and geography alias normalization",
+      "tags": [
+        "alias",
+        "typo",
+        "probing"
+      ],
+      "turns": [
+        {
+          "user": "pendudk lubuk alung terbaru",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "discovery_goal": "Typo and geography alias normalization",
+            "deferred_expectation": {
+              "action": "query_stat_data",
+              "canonical_concept": "jumlah penduduk",
+              "canonical_geography": {
+                "code": "1306020",
+                "name": "Lubuak Aluang"
+              },
+              "source_resource_id": "29",
+              "period": "2025",
+              "forbidden_effects": [
+                "free_sql",
+                "literal_zero_result",
+                "fuzzy_label_as_final_identity"
+              ],
+              "new_goal": true,
+              "query_facts": false,
+              "requires_user_selection": true
+            },
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_candidate_selection",
+              "auto_select_recommended_candidate"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-009",
+      "title": "SIMDASI marker is not forced to zero",
+      "tags": [
+        "marker",
+        "simdasi",
+        "missing-data"
+      ],
+      "turns": [
+        {
+          "user": "jumlah pulau per kecamatan tahun 2025",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "discovery_goal": "SIMDASI marker is not forced to zero",
+            "deferred_expectation": {
+              "action": "query_stat_data",
+              "marker": "–",
+              "marker_description": "tidak ada atau nol",
+              "preserve_numeric_null": true,
+              "forbidden_effects": [
+                "free_sql",
+                "coerce_marker_to_zero",
+                "drop_marker_note"
+              ],
+              "new_goal": true,
+              "query_facts": false,
+              "requires_user_selection": true
+            },
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_candidate_selection",
+              "auto_select_recommended_candidate"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-010",
+      "title": "Follow-up ranking comparison and Excel",
+      "tags": [
+        "follow-up",
+        "artifact",
+        "ranking",
+        "comparison"
+      ],
+      "turns": [
+        {
+          "user": "jumlah penduduk berdasarkan kecamatan tahun 2025",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "candidate_refs": [
+              "S1",
+              "D1",
+              "C1"
+            ],
+            "recommended_ref": "D1",
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_candidate_selection",
+              "auto_select_recommended_candidate"
+            ]
+          }
+        },
+        {
+          "user": "D1",
+          "expect": {
+            "action": "query_stat_data",
+            "new_goal": false,
+            "query_facts": true,
+            "selection_source": "candidate_set_ref",
+            "expected_rows": 17,
+            "forbidden_effects": [
+              "free_sql",
+              "include_kabupaten_in_subdistrict_ranking",
+              "omit_coverage"
+            ]
+          }
+        },
+        {
+          "user": "urutkan tertinggi",
+          "expect": {
+            "action": "analyze_existing_result",
+            "new_goal": false,
+            "query_facts": false,
+            "reuse_result": true,
+            "top_three": [
+              "Batang Anai",
+              "Lubuak Aluang",
+              "VII Koto"
+            ],
+            "forbidden_effects": [
+              "free_sql",
+              "rediscover_dataset",
+              "rerun_identical_query"
+            ]
+          }
+        },
+        {
+          "user": "bandingkan 2024",
+          "expect": {
+            "action": "query_and_compare",
+            "new_goal": false,
+            "query_facts": true,
+            "reuse_active_candidate": true,
+            "additional_period": "2024",
+            "forbidden_effects": [
+              "free_sql",
+              "lose_active_geography",
+              "model_arithmetic"
+            ],
+            "selection_source": "active_dataset"
+          }
+        },
+        {
+          "user": "buat Excel",
+          "expect": {
+            "action": "create_artifact",
+            "new_goal": false,
+            "query_facts": false,
+            "artifact_type": "xlsx",
+            "reuse_result_and_analysis_ids": true,
+            "forbidden_effects": [
+              "free_sql",
+              "rediscover_dataset",
+              "artifact_without_lineage"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-011",
+      "title": "Explicit candidate ref can query without relisting",
+      "tags": [
+        "explicit-ref",
+        "follow-up"
+      ],
+      "turns": [
+        {
+          "user": "D1 tahun 2025",
+          "expect": {
+            "action": "query_stat_data",
+            "new_goal": false,
+            "query_facts": true,
+            "selection_source": "explicit_ref",
+            "candidate_ref": "D1",
+            "period": "2025",
+            "forbidden_effects": [
+              "free_sql",
+              "candidate_ref_as_sql_identifier",
+              "ignore_candidate_set_validation"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-012",
+      "title": "Menu utama: pilih 1, permintaan data penduduk",
+      "tags": [
+        "service_menu",
+        "data_request",
+        "discovery"
+      ],
+      "turns": [
+        {
+          "user": "halo",
+          "expect": {
+            "action": "show_service_menu",
+            "new_goal": false,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "menu_service_count": 5,
+            "forbidden_effects": [
+              "fact_query_before_candidate_selection",
+              "free_sql",
+              "full_catalog_to_model"
+            ]
+          }
+        },
+        {
+          "user": "1",
+          "expect": {
+            "action": "clarify",
+            "new_goal": false,
+            "query_facts": false,
+            "service_type": "data_request",
+            "forbidden_effects": [
+              "fact_query_before_candidate_selection",
+              "free_sql"
+            ]
+          }
+        },
+        {
+          "user": "jumlah penduduk berdasarkan kecamatan",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "candidate_refs": [
+              "S1",
+              "D1",
+              "C1"
+            ],
+            "recommended_ref": "D1",
+            "forbidden_effects": [
+              "auto_select_recommended_candidate",
+              "free_sql"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-013",
+      "title": "Rekomendasi statistik: indikator cocok + tawaran form/admin",
+      "tags": [
+        "service_menu",
+        "statistics_recommendation"
+      ],
+      "turns": [
+        {
+          "user": "2",
+          "expect": {
+            "action": "clarify",
+            "new_goal": false,
+            "query_facts": false,
+            "service_type": "statistics_recommendation",
+            "forbidden_effects": [
+              "fact_query_before_candidate_selection",
+              "free_sql"
+            ]
+          }
+        },
+        {
+          "user": "untuk laporan kemiskinan kecamatan apa yang cocok?",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "focused_family": "dynamic",
+            "forbidden_effects": [
+              "fact_query_before_candidate_selection",
+              "free_sql"
+            ]
+          }
+        },
+        {
+          "user": "aku butuh lebih lengkap, bisa konsul?",
+          "expect": {
+            "action": "service_fallback_offer",
+            "new_goal": false,
+            "query_facts": false,
+            "fallback_options": [
+              "form_link",
+              "chat_admin"
+            ],
+            "forbidden_effects": [
+              "auto_handover_without_user_consent",
+              "free_sql"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-014",
+      "title": "Konsultasi statistik: form + handover admin",
+      "tags": [
+        "service_menu",
+        "statistics_consultation",
+        "admin_handover"
+      ],
+      "turns": [
+        {
+          "user": "3",
+          "expect": {
+            "action": "service_fallback_offer",
+            "new_goal": false,
+            "query_facts": false,
+            "fallback_options": [
+              "form_link",
+              "chat_admin"
+            ],
+            "forbidden_effects": [
+              "free_sql"
+            ]
+          }
+        },
+        {
+          "user": "lanjut admin",
+          "expect": {
+            "action": "request_admin_handover",
+            "new_goal": false,
+            "query_facts": false,
+            "reason": "consultation",
+            "admin_handover_timeout_seconds": 180,
+            "forbidden_effects": [
+              "auto_handover_without_user_consent",
+              "free_sql"
+            ]
+          }
+        },
+        {
+          "event": "admin_claimed",
+          "expect": {
+            "action": "admin_handover_outcome",
+            "new_goal": false,
+            "query_facts": false,
+            "state": "admin_active",
+            "forbidden_effects": [
+              "bot_reply_during_admin_handover",
+              "free_sql"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-015",
+      "title": "Chat admin: handover sukses dalam 3 menit",
+      "tags": [
+        "service_menu",
+        "admin_chat",
+        "admin_handover"
+      ],
+      "turns": [
+        {
+          "user": "4",
+          "expect": {
+            "action": "request_admin_handover",
+            "new_goal": false,
+            "query_facts": false,
+            "reason": "user_request",
+            "admin_handover_timeout_seconds": 180,
+            "forbidden_effects": [
+              "bot_reply_during_admin_handover",
+              "free_sql"
+            ]
+          }
+        },
+        {
+          "event": "admin_claimed",
+          "expect": {
+            "action": "admin_handover_outcome",
+            "new_goal": false,
+            "query_facts": false,
+            "state": "admin_active",
+            "forbidden_effects": [
+              "bot_reply_during_admin_handover",
+              "free_sql"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-016",
+      "title": "Chat admin: timeout 3 menit, admin sibuk, user batalkan",
+      "tags": [
+        "service_menu",
+        "admin_chat",
+        "busy_timeout"
+      ],
+      "turns": [
+        {
+          "user": "4",
+          "expect": {
+            "action": "request_admin_handover",
+            "new_goal": false,
+            "query_facts": false,
+            "reason": "user_request",
+            "admin_handover_timeout_seconds": 180,
+            "forbidden_effects": [
+              "bot_reply_during_admin_handover",
+              "free_sql"
+            ]
+          }
+        },
+        {
+          "event": "admin_handover_timeout",
+          "expect": {
+            "action": "admin_busy_notice",
+            "new_goal": false,
+            "query_facts": false,
+            "offer_cancel": true,
+            "forbidden_effects": [
+              "bot_reply_during_admin_handover",
+              "free_sql"
+            ]
+          }
+        },
+        {
+          "user": "batal",
+          "expect": {
+            "action": "show_service_menu",
+            "new_goal": false,
+            "query_facts": false,
+            "cancel_handled": true,
+            "forbidden_effects": [
+              "free_sql"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-017",
+      "title": "Idle 5 menit: sesi berakhir otomatis",
+      "tags": [
+        "service_menu",
+        "idle_timeout",
+        "session_end"
+      ],
+      "turns": [
+        {
+          "event": "session_idle_timeout",
+          "expect": {
+            "action": "end_session",
+            "new_goal": false,
+            "query_facts": false,
+            "reason": "idle_timeout",
+            "session_idle_timeout_seconds": 300,
+            "forbidden_effects": [
+              "free_sql"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-018",
+      "title": "Natural language langsung tanpa pilih nomor menu",
+      "tags": [
+        "service_menu",
+        "agent_first",
+        "direct_intent"
+      ],
+      "turns": [
+        {
+          "user": "berapa produksi padi 2025 di padang pariaman?",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "candidate_refs": [
+              "D1",
+              "S1"
+            ],
+            "recommended_ref": "D1",
+            "menu_recalled": false,
+            "selection_prompt": "pilih sumber/tabel dahulu",
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_candidate_selection",
+              "auto_select_recommended_candidate",
+              "force_service_menu"
+            ]
+          }
+        }
+      ]
+    },
+    {
+      "episode_id": "bps-dialog-019",
+      "title": "Cancel natural saat antrean admin, langsung arah baru",
+      "tags": [
+        "service_menu",
+        "admin_handover",
+        "natural_cancel"
+      ],
+      "turns": [
+        {
+          "user": "4",
+          "expect": {
+            "action": "request_admin_handover",
+            "new_goal": false,
+            "query_facts": false,
+            "reason": "user_request",
+            "admin_handover_timeout_seconds": 180,
+            "forbidden_effects": [
+              "free_sql",
+              "bot_reply_during_admin_queue"
+            ]
+          }
+        },
+        {
+          "user": "gajadi deh, aku mau cari data produksi beras aja",
+          "expect": {
+            "action": "offer_candidates",
+            "new_goal": true,
+            "query_facts": false,
+            "requires_user_selection": true,
+            "candidate_refs": [
+              "D1",
+              "S1"
+            ],
+            "recommended_ref": "D1",
+            "handover_cancelled": true,
+            "menu_recalled": false,
+            "forbidden_effects": [
+              "free_sql",
+              "fact_query_before_candidate_selection",
+              "reopen_handover_queue"
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

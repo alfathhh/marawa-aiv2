@@ -1,0 +1,98 @@
+version: "1.0"
+mode: enforce
+fail_mode: closed_for_sensitive_actions
+
+scope:
+  allowed_domains:
+    - statistics
+    - bps_data_products
+    - statistical_analysis
+    - statistical_methodology
+    - bps_services
+  partial_scope_behavior: allow_constrained
+
+normalization:
+  unicode_nfkc: true
+  detect_mixed_scripts: true
+  detect_homoglyphs: true
+  detect_zero_width: true
+  detect_bidi_controls: true
+  bounded_decode:
+    enabled: true
+    formats: [base64, hex, url]
+    max_depth: 2
+    max_decoded_bytes: 16384
+
+policy_decisions:
+  allowed: [ALLOW, ALLOW_CONSTRAINED, CLARIFY]
+  blocked: [BLOCK_SCOPE, BLOCK_SECURITY, HOLD_FOR_REVIEW]
+  expose_detector_reason_to_user: false
+
+agent:
+  max_steps: 8
+  stop_after_repeated_denied_actions: 2
+  forbid_identical_tool_retry: true
+  generic_tools_disabled: [shell, browser, arbitrary_http, filesystem]
+
+context:
+  user_content_role_locked: true
+  retrieved_content_taint: UNTRUSTED_EVIDENCE
+  tool_text_taint: UNTRUSTED_OBSERVATION
+  preserve_policy_under_truncation: true
+  allow_document_to_reset_context: false
+
+memory:
+  patch_allowlist:
+    - goal
+    - active_topic
+    - active_indicators
+    - active_geographies
+    - active_periods
+    - active_units
+    - active_dataset_ids
+    - filters
+    - evidence_ids
+    - result_ids
+    - analysis_ids
+    - artifact_ids
+    - assumptions
+    - open_questions
+    - last_user_intent
+  forbidden_fields: [policy, role, permissions, tools, system_prompt, secrets]
+  require_reference_validation: true
+
+rag:
+  scan_indirect_injection: true
+  instruction_like_content_is_data: true
+  active_content_default: quarantine
+  require_active_approved_source: true
+
+output:
+  validate_scope: true
+  validate_grounding: true
+  validate_analysis_lineage: true
+  scan_secrets_and_pii: true
+  scan_prompt_canary: true
+  citation_url_allowlist_only: true
+  repair_attempts: 1
+
+fallback:
+  policy_parity_required: true
+  security_block_triggers_fallback: false
+  no_evidence_triggers_fallback: false
+
+abuse:
+  per_contact_rate_limit_enabled: true
+  near_duplicate_probe_detection: true
+  conversation_risk_decay_enabled: true
+  repeated_probe_action: cooldown_or_review
+
+release_gates:
+  critical_effect_attack_success_max: 0
+  unauthorized_tool_execution_max: 0
+  memory_privilege_mutation_max: 0
+  prompt_or_secret_canary_leak_max: 0
+  indirect_injection_execution_max: 0
+  fallback_regression_max: 0
+  sandbox_escape_max: 0
+  legitimate_false_positive_target_percent: 2.0

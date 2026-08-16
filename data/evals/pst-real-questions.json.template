@@ -1,0 +1,17 @@
+{
+  "_comment": [
+    "Rename to pst-real-questions.json once filled. The scorer picks it up",
+    "automatically and flips its label from synthetic_author_written to",
+    "real_pst_questions. This is the cheapest unblocking action in the project:",
+    "ask the PST front desk to log incoming questions verbatim for 3 days.",
+    "Record typos and ambiguity as they were actually typed — cleaning them up",
+    "destroys exactly the signal we need.",
+    "'ids' is the dataset id(s) a knowledgeable officer says should answer it;",
+    "leave it empty if nobody is sure, that is a finding in itself."
+  ],
+  "collected_at": null,
+  "collected_by": null,
+  "questions": [
+    {"utterance": "berapa penduduk lubuk alung sekarang", "family": "dynamic", "ids": ["29"]}
+  ]
+}
