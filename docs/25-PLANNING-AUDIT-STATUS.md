@@ -564,3 +564,36 @@ privilege runtime terbukti; full suite **396/396 PASS** lawan PostgreSQL nyata,
 TOTP login + CRUD kontak via runtime role, webhook tanpa signature = 401, dan
 fanout membuat outbox pending + conversation `is_staff_channel=true` (worker
 ditahan dan artefak smoke dihapus sebelum restart, jadi tak ada pesan keluar).
+
+## Audit kedelapan — login password, QR di dashboard, sisa STAFF (16 Agt)
+
+Arah operator (3 item): login dashboard pakai **username+password biasa**,
+**QR pairing ditampilkan di dashboard**, dan DNS dikelola sendiri via
+Cloudflare. Status:
+
+- **Login password**: migrasi `010_admin_password` (`marawa_admins.password_hash`,
+  shape CHECK), `scripts/password_auth.py` PBKDF2-HMAC-SHA256 stdlib
+  (210.000 iterasi, format self-describing), `/admin/login` wajib password;
+  TOTP tetap didukung opsional bila ter-enroll. `POST /admin/set-password`
+  (superadmin only). Admin tanpa hash ditolak seragam (tanpa oracle enumerasi).
+- **QR di dashboard**: worker push pairing QR + connection state ke
+  `/internal/whatsapp-qr` + `/internal/whatsapp-connection` (X-Internal-Key),
+  disimpan `marawa_settings` (`wa_qr`, `wa_connection`); `GET /settings/whatsapp`
+  (superadmin) + `GET /settings/whatsapp-qr.png` (qrcode[pil]); dashboard
+  menampilkan QR live + status di panel Setelan → WhatsApp (tombol "Muat ulang
+  QR", bukan auto-polling).
+- **Sisa audit subagent ditutup**: (005) staff-policy lookup **fail-closed**
+  → lookup error = webhook 503, bukan "bukan petugas"; (006) channel notifikasi
+  mengembalikan bool → `last_notified_at` hanya di-update saat ada penerima
+  ter-enqueue; (007) Baileys v7 **LID** → `normalize.js` memakai
+  `remoteJidAlt` (PN) sebagai identitas percakapan.
+- **Verifikasi live**: migrasi 010 UP→DOWN→UP isolated; login password
+  `seed-super-1` 200 + `/admin/session` 200; QR smoke (push → GET → PNG 290x290
+  asli); full suite **385/385 py + 9/9 node PASS**.
+- **DNS Cloudflare**: `CLOUDFLARE_API_TOKEN` di environment **invalid**
+  (revoked) — setting DNS tidak bisa dieksekusi dari sini sampai token zona
+  yang valid diberikan. Blocker eksternal yang tersisa: DNS + pairing QR (QR
+  sudah tampil di dashboard, tinggal di-scan).
+- Password seed `seed-super-1` disimpan `/etc/marawa/admin-passwords.txt`
+  (0600). Git: `bbf27a7` (remediasi-20260816-6).
+
