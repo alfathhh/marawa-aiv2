@@ -160,6 +160,14 @@ The following pre-migration statements were stale and have been corrected in the
 
 - ✅ **Reconciliation vs built reality:** `docs/02-AGENT-RUNTIME` mendapat session-policy engine (idle 300s + handover SLA 180s, agent-first, pointer `docs/27`) + acceptance criteria menu non-forcing/natural cancel; `docs/04-RAG-AND-DATA` — structured data path ditandai BUILT (serving views + `marawa_runtime_ro` + binder), registry section status live (counts + candidate-set pinning), vector ANN ditandai deferred; `docs/07-WHATSAPP-WEBHOOK` — timed notices via scheduler/outbox dengan final state guard + contract tests baru.
 
+### Resolved hari ini (batch kelima — postgres store, 16 Aug)
+
+- ✅ **`migrations/007_runtime_conversation_tables`** (149 baris): `marawa_conversations/messages/outbox/admins/settings/audit_log`; partial unique index dedup inbound + idempotency key; trigger penjaga superadmin terakhir; indeks parsial sweep. UP/DOWN/UP diuji di DB isolated PG 16.15. Applied ke produksi (checksum `03d72bac…`), ledger 001–007.
+- ✅ **`scripts/postgres_store.py`** (339 baris): CAS `UPDATE … WHERE state_version` (lost-update lintas proses), `FOR UPDATE SKIP LOCKED` claim batch (stale 120s), `ON CONFLICT DO NOTHING` first-contact, sweep tanpa `IDLE_CLOSED`. **11/11 tes lawan DB nyata** termasuk lost-update antar-koneksi terpisah.
+- ✅ **Bug U** — `SendRecord.sender_admin_id` ditambah (sebelumnya hanya di `OutboxEntry`; guard `reassigned_to_other_admin` di `authorize_send` mustahil menyala di jalur nyata → balasan admin yang sudah dilepas tetap terkirim).
+- ✅ **CHECK constraint terbukti di DB** — INSERT measure `queryable=true + unit_source='title_matched'` → `ERROR … violates check constraint measure_registry_queryable_requires_unit`.
+- ⏭️ **Berikutnya (dari laporan internal, sengaja belum dikerjakan):** `app.py` belum pakai `PostgresStore` (DI masih `Store` in-memory); Baileys; dashboard UI; auth TOTP; retensi 365 hari; probe OQ-05.
+
 ### Resolved hari ini (batch keempat — remediasi bundle 16 Aug)
 
 - ✅ **Migration 006 live**: views honest-naming settled (`category_code/label`, `unit_state`); constraint `aggregation_semantics` + `unknown`, `unit_state` + `review_required`; backfill-then-check order; registry 51 measures `NOT queryable`, 27 dataset `blocked_quality`.
