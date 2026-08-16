@@ -1,0 +1,892 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://marawa.local/contracts/bps-query-contracts.schema.json",
+  "title": "MARAWA BPS discovery and typed-query planning contracts",
+  "description": "Planning contract. Candidate IDs and cursors are opaque server-owned values; no free SQL is accepted.",
+  "$defs": {
+    "PeriodSelector": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "mode",
+        "values"
+      ],
+      "properties": {
+        "mode": {
+          "enum": [
+            "exact",
+            "latest",
+            "range",
+            "comparison"
+          ]
+        },
+        "values": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 50
+        }
+      }
+    },
+    "CandidateItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "display_ref",
+        "source_family",
+        "title",
+        "summary",
+        "answerability",
+        "match_reasons",
+        "recommended"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "display_ref": {
+          "type": "string",
+          "pattern": "^[SDCPK][1-9][0-9]*$"
+        },
+        "source_family": {
+          "enum": [
+            "simdasi",
+            "dynamic",
+            "census",
+            "publication",
+            "knowledge"
+          ]
+        },
+        "title": {
+          "type": "string",
+          "minLength": 1
+        },
+        "summary": {
+          "type": "string",
+          "minLength": 1
+        },
+        "period_latest": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "answerability": {
+          "enum": [
+            "answerable",
+            "metadata_only",
+            "blocked_quality",
+            "unavailable"
+          ]
+        },
+        "match_reasons": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "recommended": {
+          "type": "boolean"
+        }
+      }
+    },
+    "CandidateGroup": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "source_family",
+        "items",
+        "next_cursor",
+        "has_more"
+      ],
+      "properties": {
+        "source_family": {
+          "enum": [
+            "simdasi",
+            "dynamic",
+            "census",
+            "publication",
+            "knowledge"
+          ]
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CandidateItem"
+          },
+          "maxItems": 3
+        },
+        "next_cursor": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "has_more": {
+          "type": "boolean"
+        }
+      }
+    },
+    "ProbingHint": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "slot",
+        "question_kind",
+        "information_gain"
+      ],
+      "properties": {
+        "slot": {
+          "type": "string"
+        },
+        "question_kind": {
+          "type": "string"
+        },
+        "information_gain": {
+          "type": "number",
+          "minimum": 0,
+          "maximum": 1
+        }
+      }
+    },
+    "DiscoveryRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "original_query",
+        "goal",
+        "source_families",
+        "page_size_per_family",
+        "cursors",
+        "candidate_set_id"
+      ],
+      "properties": {
+        "original_query": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 2000
+        },
+        "goal": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "concepts",
+            "operation",
+            "dimension_roles",
+            "known_slots"
+          ],
+          "properties": {
+            "concepts": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "minItems": 1,
+              "maxItems": 10
+            },
+            "operation": {
+              "enum": [
+                "lookup",
+                "breakdown",
+                "trend",
+                "compare",
+                "rank",
+                "composition",
+                "publication",
+                "unknown"
+              ]
+            },
+            "dimension_roles": {
+              "type": "array",
+              "items": {
+                "enum": [
+                  "geography",
+                  "category",
+                  "subperiod"
+                ]
+              },
+              "uniqueItems": true
+            },
+            "known_slots": {
+              "type": "object",
+              "additionalProperties": {
+                "type": [
+                  "string",
+                  "number",
+                  "boolean",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "source_families": {
+          "type": "array",
+          "items": {
+            "enum": [
+              "simdasi",
+              "dynamic",
+              "census",
+              "publication",
+              "knowledge"
+            ]
+          },
+          "minItems": 1,
+          "uniqueItems": true
+        },
+        "page_size_per_family": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 3
+        },
+        "cursors": {
+          "type": "object",
+          "additionalProperties": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "candidate_set_id": {
+          "type": [
+            "string",
+            "null"
+          ]
+        }
+      }
+    },
+    "CandidateSetResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_set_id",
+        "registry_version",
+        "groups",
+        "probing_hints",
+        "selection_required"
+      ],
+      "properties": {
+        "candidate_set_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "registry_version": {
+          "type": "string",
+          "minLength": 1
+        },
+        "groups": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/CandidateGroup"
+          },
+          "maxItems": 5
+        },
+        "probing_hints": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ProbingHint"
+          }
+        },
+        "selection_required": {
+          "type": "boolean",
+          "description": "True means fact query is not allowed until the user selects a candidate from this set (or gives an exact ref/code)."
+        }
+      }
+    },
+    "InspectDatasetResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "candidate_id",
+        "dataset_shape",
+        "answerability",
+        "measures",
+        "period",
+        "dimensions",
+        "safe_defaults",
+        "required_slots",
+        "supported_operations",
+        "quality_flags"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string"
+        },
+        "dataset_shape": {
+          "enum": [
+            "geography_series",
+            "category_series",
+            "cross_tab",
+            "quarterly_series",
+            "publication_metadata"
+          ]
+        },
+        "answerability": {
+          "enum": [
+            "answerable",
+            "metadata_only",
+            "blocked_quality",
+            "unavailable"
+          ]
+        },
+        "measures": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "measure_id",
+              "name",
+              "value_type",
+              "unit_state",
+              "unit"
+            ],
+            "properties": {
+              "measure_id": {
+                "type": "string"
+              },
+              "name": {
+                "type": "string"
+              },
+              "value_type": {
+                "enum": [
+                  "number",
+                  "text",
+                  "marker"
+                ]
+              },
+              "unit_state": {
+                "enum": [
+                  "known",
+                  "unitless",
+                  "unknown_review"
+                ]
+              },
+              "unit": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              }
+            }
+          }
+        },
+        "period": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "granularity",
+            "min",
+            "max",
+            "latest"
+          ],
+          "properties": {
+            "granularity": {
+              "enum": [
+                "annual",
+                "quarterly",
+                "event",
+                "release"
+              ]
+            },
+            "min": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "max": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "latest": {
+              "type": [
+                "string",
+                "null"
+              ]
+            }
+          }
+        },
+        "dimensions": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          }
+        },
+        "safe_defaults": {
+          "type": "object"
+        },
+        "required_slots": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "supported_operations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "uniqueItems": true
+        },
+        "quality_flags": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "QueryStatDataRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "selection",
+        "candidate_id",
+        "measure_id",
+        "period",
+        "subperiod",
+        "geography",
+        "dimension_filters",
+        "operation",
+        "order",
+        "limit"
+      ],
+      "properties": {
+        "candidate_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "measure_id": {
+          "type": "string",
+          "minLength": 1
+        },
+        "period": {
+          "$ref": "#/$defs/PeriodSelector"
+        },
+        "subperiod": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "geography": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "level",
+            "item_ids"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "exact",
+                "breakdown",
+                "none"
+              ]
+            },
+            "level": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "item_ids": {
+              "type": "array",
+              "items": {
+                "type": "string"
+              },
+              "maxItems": 100
+            }
+          }
+        },
+        "dimension_filters": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
+          }
+        },
+        "operation": {
+          "enum": [
+            "lookup",
+            "list",
+            "trend",
+            "compare",
+            "rank",
+            "composition"
+          ]
+        },
+        "order": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "by",
+            "direction"
+          ],
+          "properties": {
+            "by": {
+              "enum": [
+                "registry_order",
+                "value",
+                "period",
+                "label"
+              ]
+            },
+            "direction": {
+              "enum": [
+                "asc",
+                "desc"
+              ]
+            }
+          }
+        },
+        "limit": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 100
+        },
+        "selection": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "mode",
+            "candidate_id",
+            "provenance"
+          ],
+          "properties": {
+            "mode": {
+              "enum": [
+                "candidate_set_ref",
+                "explicit_ref",
+                "active_dataset"
+              ]
+            },
+            "candidate_id": {
+              "type": "string",
+              "minLength": 1
+            },
+            "candidate_set_id": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "display_ref": {
+              "type": [
+                "string",
+                "null"
+              ]
+            },
+            "provenance": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "source",
+                "recorded_at"
+              ],
+              "properties": {
+                "source": {
+                  "enum": [
+                    "user_message",
+                    "working_memory",
+                    "server_registry"
+                  ]
+                },
+                "recorded_at": {
+                  "type": "string",
+                  "format": "date-time"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "NormalizedQueryResult": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "result_id",
+        "query_spec_hash",
+        "dataset_id",
+        "registry_version",
+        "source_versions",
+        "schema",
+        "rows",
+        "coverage",
+        "validation",
+        "lineage",
+        "cache"
+      ],
+      "properties": {
+        "result_id": {
+          "type": "string"
+        },
+        "query_spec_hash": {
+          "type": "string"
+        },
+        "dataset_id": {
+          "type": "string"
+        },
+        "registry_version": {
+          "type": "string"
+        },
+        "source_versions": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "minItems": 1
+        },
+        "schema": {
+          "type": "object"
+        },
+        "rows": {
+          "type": "array",
+          "items": {
+            "type": "object"
+          },
+          "maxItems": 100
+        },
+        "coverage": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "returned",
+            "expected",
+            "complete"
+          ],
+          "properties": {
+            "returned": {
+              "type": "integer",
+              "minimum": 0
+            },
+            "expected": {
+              "type": [
+                "integer",
+                "null"
+              ],
+              "minimum": 0
+            },
+            "complete": {
+              "type": "boolean"
+            }
+          }
+        },
+        "validation": {
+          "type": "object"
+        },
+        "lineage": {
+          "type": "object"
+        },
+        "cache": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "hit"
+          ],
+          "properties": {
+            "hit": {
+              "type": "boolean"
+            }
+          }
+        }
+      }
+    },
+    "ClarificationResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "status",
+        "reason",
+        "slot",
+        "choices",
+        "question_hint"
+      ],
+      "properties": {
+        "status": {
+          "const": "needs_clarification"
+        },
+        "reason": {
+          "enum": [
+            "material_slot_missing",
+            "candidate_ambiguous",
+            "source_conflict",
+            "candidate_expired"
+          ]
+        },
+        "slot": {
+          "type": "string"
+        },
+        "choices": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "maxItems": 5
+        },
+        "question_hint": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    },
+    "ServiceMenuItem": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "key",
+        "label",
+        "service_type"
+      ],
+      "properties": {
+        "key": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 5
+        },
+        "label": {
+          "type": "string",
+          "minLength": 1
+        },
+        "service_type": {
+          "enum": [
+            "data_request",
+            "statistics_recommendation",
+            "statistics_consultation",
+            "admin_chat",
+            "exit"
+          ]
+        }
+      }
+    },
+    "ServiceMenuResponse": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "items",
+        "prompt",
+        "session_idle_timeout_seconds",
+        "advisory"
+      ],
+      "properties": {
+        "action": {
+          "const": "show_service_menu"
+        },
+        "items": {
+          "type": "array",
+          "items": {
+            "$ref": "#/$defs/ServiceMenuItem"
+          },
+          "minItems": 5,
+          "maxItems": 5
+        },
+        "prompt": {
+          "type": "string",
+          "minLength": 1
+        },
+        "session_idle_timeout_seconds": {
+          "const": 300
+        },
+        "advisory": {
+          "type": "boolean",
+          "description": "menu bersifat orientasi; user bebas menjawab dengan intent natural"
+        }
+      }
+    },
+    "AdminHandoverRequest": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "reason",
+        "queue_acknowledgement",
+        "admin_handover_timeout_seconds"
+      ],
+      "properties": {
+        "action": {
+          "const": "request_admin_handover"
+        },
+        "reason": {
+          "enum": [
+            "user_request",
+            "data_unavailable",
+            "consultation",
+            "service_form"
+          ]
+        },
+        "queue_acknowledgement": {
+          "type": "string",
+          "minLength": 1
+        },
+        "admin_handover_timeout_seconds": {
+          "const": 180
+        }
+      }
+    },
+    "AdminHandoverOutcome": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "state"
+      ],
+      "properties": {
+        "action": {
+          "const": "admin_handover_outcome"
+        },
+        "state": {
+          "enum": [
+            "admin_active",
+            "admin_busy",
+            "cancelled"
+          ]
+        },
+        "notice": {
+          "type": "string",
+          "minLength": 1
+        },
+        "offer_cancel": {
+          "type": "boolean"
+        }
+      }
+    },
+    "SessionEndNotice": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "action",
+        "reason",
+        "goodbye_message"
+      ],
+      "properties": {
+        "action": {
+          "const": "end_session"
+        },
+        "reason": {
+          "enum": [
+            "user_exit",
+            "idle_timeout",
+            "admin_timeout_end"
+          ]
+        },
+        "goodbye_message": {
+          "type": "string",
+          "minLength": 1
+        }
+      }
+    }
+  }
+}
