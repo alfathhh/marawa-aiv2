@@ -483,7 +483,7 @@ Urutan dikoreksi oleh audit; jangan mulai Census cleanup sebelum lifecycle/secur
 
 ```bash
 cd /home/ubuntu/projects/marawa-ai
-uv run --with pytest pytest tests/ -q
+uv run pytest tests/ -q -p no:cacheprovider
 python3 scripts/validate_docs.py
 uv run python scripts/check_runtime_privileges.py     # after ANY migration or view rebuild
 uv run python scripts/validate_bps_query_prototypes.py
@@ -513,3 +513,54 @@ Run `scripts/check_runtime_privileges.py` after every migration, registry
 rebuild, or `ensure_schema` bootstrap. `DROP VIEW` removes object-level grants,
 so the read-only boundary used to depend on a human remembering to re-apply
 migration 004. It now fails loudly instead of failing open.
+
+## Audit keenam — security, prompt cache, dan production fail-closed (16 Agt)
+
+Bundle menemukan tiga jahitan keamanan yang benar-benar berpengaruh:
+
+- **Webhook HMAC:** worker mengirim `X-Marawa-Signature`, sedangkan handler lama
+  hanya membaca nama header lain; PostgresStore juga tidak memuat
+  `MARAWA_WEBHOOK_SECRET`. Kedua nama header diterima selama rollout, secret
+  dimuat untuk Store dan PostgresStore, dan smoke produksi tanpa signature
+  terbukti `401 Signature webhook tidak valid`.
+- **Fail-closed produksi:** `MARAWA_ENV=production` eksplisit. Startup berhenti
+  bila session key atau webhook secret hilang; mode dev tidak lagi aktif hanya
+  karena env file gagal dimuat.
+- **Rate limit TOTP:** login dibatasi per admin dan per IP; pesan kegagalan
+  disamakan agar tidak menjadi oracle enumerasi akun.
+
+`scripts/prompt_cache.py` memisahkan prefix stabil/volatil, menolak timestamp,
+nomor, UUID, dan session-id di prefix cache, mencatat fingerprint drift dan hit
+rate, serta membedakan `cached_tokens=0` dari field provider yang tidak ada.
+Artefak probe dikoreksi dari header `blocked` yang stale menjadi `resolved`;
+model produksi tetap `gemini-3.5-flash-lite`.
+
+## Audit ketujuh — nomor petugas dan fanout handover (16 Agt)
+
+Migrasi **009** menambah `marawa_admin_contacts` dan
+`marawa_conversations.is_staff_channel`. Runtime sekarang:
+
+1. menormalisasi semua bentuk nomor ke satu kanonik (`scripts/phone.py`);
+2. memfilter nomor petugas sebelum percakapan warga dibuat;
+3. menyembunyikan staff-channel dari inbox dan sweep;
+4. mem-fanout notifikasi antrean ke setiap petugas aktif dengan idempotency key
+   per tujuan;
+5. memberi superadmin CRUD nomor melalui dashboard Setelan.
+
+Remediasi merge tambahan setelah verifikasi DB nyata:
+
+- migrasi 009 memberi grant tabel + sequence ke `marawa_runtime_rw` (tanpa ini
+  API produksi `permission denied` walau test admin hijau);
+- fanout membuat dan menandai conversation staff sebelum enqueue (outbox punya
+  FK ke conversations; test FakeStore bundle tidak menangkapnya);
+- PostgresStore produksi di-wire ke FanoutChannel, bukan InMemoryChannel;
+- kontak yang di-soft-delete bisa diaktifkan kembali;
+- cabang prefix internasional `00` diperbaiki; fixture nomor tersensor yang
+  mustahil direkonstruksi tidak dipakai sebagai input valid.
+
+Bukti aktual: migrasi 009 **UP→DOWN→UP** bersih di PostgreSQL isolated,
+privilege runtime terbukti; full suite **396/396 PASS** lawan PostgreSQL nyata,
+13/13 prototype, docs, privilege checker, dan 7/7 Node PASS. Smoke produksi:
+TOTP login + CRUD kontak via runtime role, webhook tanpa signature = 401, dan
+fanout membuat outbox pending + conversation `is_staff_channel=true` (worker
+ditahan dan artefak smoke dihapus sebelum restart, jadi tak ada pesan keluar).

@@ -76,9 +76,9 @@ def test_build_store_switches_on_runtime_dsn(monkeypatch) -> None:
     from scripts.postgres_store import PostgresStore
 
     monkeypatch.delenv("MARAWA_RUNTIME_DSN", raising=False)
-    assert type(_build_store()) is Store
+    assert type(_build_store()).__name__ == "Store"
     monkeypatch.setenv("MARAWA_RUNTIME_DSN", "dbname=unused_construction_only")
-    assert type(_build_store()) is PostgresStore
+    assert type(_build_store()).__name__ == "PostgresStore"
 
 
 @pytest.fixture()

@@ -62,8 +62,10 @@ from scripts.outbox_worker import (
     is_duplicate_send,
 )
 from scripts.scheduler import plan_sweep
-from scripts.notifications import InMemoryChannel, dispatch_effects
+from scripts.notifications import InMemoryChannel, build_channel, dispatch_effects
 from scripts.postgres_store import PostgresStore
+from scripts.phone import InvalidPhone, normalize_phone, display_phone
+from scripts.rate_limit import LOGIN_LIMITER
 from scripts.totp_session import issue_session, new_totp_secret, otpauth_uri, session_key_stable, verify_session, verify_totp
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -102,11 +104,17 @@ class Store:
         # Swap for a real WhatsApp-sending channel before production; see
         # scripts/notifications.py. Kept in-memory here so the sweep and
         # notification wiring can be demonstrated and tested without Baileys.
-        self.notification_channel = InMemoryChannel()
+        # Produksi memakai OutboxChannel (kirim sungguhan lewat antrean yang
+        # sama dengan pesan warga); dev/tes memakai penampung in-memory.
+        self.notification_channel = build_channel(self)
         self._locks: dict[str, threading.Lock] = {}
         self._locks_guard = threading.Lock()
-        # AUDIT J: when set, every webhook call must carry a valid signature.
-        self.webhook_secret: str | None = None
+        # AUDIT V: this used to be hardcoded None and never populated from the
+        # environment, so `_verify_webhook_signature` took its "no secret
+        # configured" early-return on EVERY request and the endpoint accepted
+        # anything that could reach the port. Loading it here is what makes the
+        # AUDIT J fix actually reachable in production.
+        self.webhook_secret: str | None = os.environ.get("MARAWA_WEBHOOK_SECRET") or None
 
     def get_conversation(self, conversation_id: str) -> ConversationState:
         if conversation_id not in self.conversations:
@@ -165,6 +173,11 @@ def _build_store() -> Store:
     dsn = os.environ.get("MARAWA_RUNTIME_DSN")
     if dsn:
         store = PostgresStore(dsn, notification_channel=InMemoryChannel())
+        # build_channel needs the store itself. Construct first, then wire the
+        # production fanout adapter; otherwise deployed Postgres remains on
+        # InMemoryChannel even though Store() selects FanoutChannel.
+        store.notification_channel = build_channel(store)
+        store.webhook_secret = os.environ.get("MARAWA_WEBHOOK_SECRET") or None
         return store
     return Store()
 
@@ -183,6 +196,14 @@ def get_store() -> Store:
 app = FastAPI(title="MARAWA AI — Runtime Wiring")
 
 
+@app.on_event("startup")
+def fail_closed_production_startup() -> None:
+    """A production service with missing auth/webhook secrets must not boot."""
+    problems = assert_production_config()
+    if problems:
+        raise RuntimeError("Konfigurasi produksi tidak aman: " + "; ".join(problems))
+
+
 # ---------------------------------------------------------------------------
 # Auth — TOTP + sesi (docs/06 §4); header X-Admin-Id hanya mode dev
 # ---------------------------------------------------------------------------
@@ -193,14 +214,34 @@ class AdminIdentity(BaseModel):
     role: str
 
 
-def _dev_header_mode() -> bool:
-    """Sesuai docs/06 §4: header placeholder hanya untuk pengembangan.
+def is_production() -> bool:
+    """Mode produksi ditentukan EKSPLISIT, bukan disimpulkan dari ada/tidaknya
+    sebuah env var.
 
-    MARAWA_SESSION_KEY ada → mode produksi: WAJIB Bearer session.
-    MARAWA_SESSION_KEY tidak ada → mode dev: X-Admin-Id tetap diterima
-    sehingga wiring/dashboard test lama tetap hijau; sesi TOTP juga aktif.
+    AUDIT W: sebelumnya mode dev aktif kapan pun `MARAWA_SESSION_KEY` tidak ada.
+    Artinya kalau env file systemd gagal dimuat di produksi, aplikasi DIAM-DIAM
+    turun ke menerima header `X-Admin-Id` — yaitu tanpa autentikasi sama sekali.
+    Salah konfigurasi harus gagal-tertutup dan berisik, bukan gagal-terbuka dan
+    senyap.
     """
-    return not session_key_stable()
+    return os.environ.get("MARAWA_ENV", "").lower() in ("production", "prod")
+
+
+def assert_production_config() -> list[str]:
+    """Prasyarat yang wajib ada sebelum melayani lalu lintas nyata."""
+    problems: list[str] = []
+    if not is_production():
+        return problems
+    if not session_key_stable():
+        problems.append("MARAWA_SESSION_KEY wajib di-set di produksi (sesi tidak boleh acak per boot)")
+    if not os.environ.get("MARAWA_WEBHOOK_SECRET"):
+        problems.append("MARAWA_WEBHOOK_SECRET wajib di-set di produksi (webhook tanpa verifikasi)")
+    return problems
+
+
+def _dev_header_mode() -> bool:
+    """Header `X-Admin-Id` hanya boleh hidup di luar produksi."""
+    return not is_production() and not session_key_stable()
 
 
 def current_admin(
@@ -241,18 +282,47 @@ class LoginRequest(BaseModel):
 
 
 @app.post("/admin/login")
-def admin_login(body: LoginRequest, store: Store = Depends(get_store)) -> dict[str, Any]:
+def admin_login(
+    body: LoginRequest,
+    request: Request,
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
     if not session_key_stable():
         raise HTTPException(503, "Sesi dinonaktifkan: set MARAWA_SESSION_KEY")
+
+    # AUDIT X: dibatasi per akun DAN per IP. Per akun saja bisa disapu dari
+    # banyak IP; per IP saja membiarkan satu penyerang menggilir banyak akun.
+    client_ip = request.client.host if request.client else "unknown"
+    keys = (f"admin:{body.admin_id}", f"ip:{client_ip}")
+    for key in keys:
+        allowed, retry_after = LOGIN_LIMITER.check(key)
+        if not allowed:
+            store.audit("admin_login_ratelimited", body.admin_id, None, {"key": key})
+            raise HTTPException(
+                429, f"Terlalu banyak percobaan. Coba lagi dalam {retry_after} detik.",
+                headers={"Retry-After": str(retry_after)},
+            )
+
+    def _fail(status: int, detail: str) -> HTTPException:
+        for key in keys:
+            LOGIN_LIMITER.record_failure(key)
+        # Pesan gagal sengaja tidak membedakan "admin tidak ada" dari "kode
+        # salah": membedakannya memberi penyerang cara mengetahui admin_id mana
+        # yang nyata sebelum mulai menebak kode.
+        return HTTPException(status, detail)
+
     admin = store.admins.get(body.admin_id)
     if admin is None:
-        raise HTTPException(401, "Admin tidak dikenal")
+        raise _fail(401, "Kredensial tidak valid")
     secret = store.totp_secret_for(body.admin_id)
     if secret is None:
-        raise HTTPException(403, "TOTP belum di-enroll untuk admin ini")
+        raise _fail(401, "Kredensial tidak valid")
     if not verify_totp(secret, body.totp_code):
-        raise HTTPException(401, "Kode TOTP salah")
-    store.audit("admin_login", body.admin_id, None, {"via": "totp"})
+        raise _fail(401, "Kredensial tidak valid")
+
+    for key in keys:
+        LOGIN_LIMITER.record_success(key)
+    store.audit("admin_login", body.admin_id, None, {"via": "totp", "ip": client_ip})
     return {"token": issue_session(body.admin_id), "admin_id": body.admin_id, "role": admin["role"]}
 
 
@@ -306,6 +376,37 @@ class InboundMessage(BaseModel):
     admin_id: str | None = None  # only meaningful when from_me
 
 
+def _is_staff_number(store: Store, conversation_id: str) -> bool:
+    """Apakah pengirim ini nomor petugas?
+
+    Perbandingan SELALU lewat normalize_phone di kedua sisi. Membandingkan
+    string mentah adalah cara daftar ini berhenti bekerja tanpa gejala: nomor
+    tersimpan `08123`, WhatsApp mengirim `628123`, tidak cocok, tidak ada error.
+    """
+    getter = getattr(store, "blocked_phones", None)
+    if getter is None:
+        return False
+    try:
+        blocked = getter()
+    except Exception:  # noqa: BLE001
+        return False
+    if not blocked:
+        return False
+    try:
+        return normalize_phone(conversation_id) in blocked
+    except InvalidPhone:
+        return False
+
+
+def _mark_staff(store: Store, conversation_id: str) -> None:
+    marker = getattr(store, "mark_staff_channel", None)
+    if marker is not None:
+        try:
+            marker(conversation_id)
+        except Exception:  # noqa: BLE001
+            pass
+
+
 def _as_aware(value: datetime) -> datetime:
     """AUDIT I: a WhatsApp bridge is not guaranteed to send an offset.
 
@@ -337,15 +438,34 @@ def _verify_webhook_signature(store: Store, body: bytes, signature: str) -> None
 async def webhook_whatsapp(
     request: Request,
     message: InboundMessage,
-    x_webhook_signature: str = Header(default=""),
+    # AUDIT V: the worker signs and sends `X-Marawa-Signature`; this handler read
+    # `x-webhook-signature`. Two names for one thing, so the values could never
+    # match. Both names are accepted now — the worker's name is canonical, the
+    # old one kept so an in-flight deployment does not break mid-rollout.
+    x_marawa_signature: str = Header(default="", alias="X-Marawa-Signature"),
+    x_webhook_signature: str = Header(default="", alias="X-Webhook-Signature"),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    _verify_webhook_signature(store, await request.body(), x_webhook_signature)
+    _verify_webhook_signature(
+        store, await request.body(), x_marawa_signature or x_webhook_signature
+    )
 
     message_ts = _as_aware(message.timestamp)
     cutoff = _as_aware(store.pairing_cutoff_ts) if store.pairing_cutoff_ts else None
     if should_ignore_inbound(message_ts, cutoff):
         return {"status": "ignored_pre_pairing_history"}
+
+    # Nomor petugas tidak dilayani bot. Filter berjalan SEBELUM percakapan
+    # dibuat, bukan sesudah — kalau ditaruh belakangan, thread petugas tetap
+    # lahir dan mengotori kotak masuk meski botnya diam.
+    #
+    # Tanpa penjaga ini: petugas membalas notifikasi ("oke saya cek") dan bot
+    # menjawabnya sebagai pertanyaan statistik; nomor petugas muncul di papan
+    # triase sebagai warga; dan petugas bisa mengetik ADMIN lalu memicu
+    # notifikasi ke dirinya sendiri.
+    if _is_staff_number(store, message.conversation_id):
+        _mark_staff(store, message.conversation_id)
+        return {"status": "ignored_staff_number", "run_agent": False}
 
     conversation = store.get_conversation(message.conversation_id)
 
@@ -546,6 +666,68 @@ def put_timeout_settings(
     store.settings.update(payload.values)
     store.audit("settings_changed", admin.admin_id, None, {"before": before, "after": store.settings})
     return store.settings
+
+
+# ── Nomor petugas (migrasi 009) ──
+
+
+class AdminContactIn(BaseModel):
+    phone: str
+    label: str
+    notify: bool = True
+
+
+@app.get("/settings/admin-contacts")
+def list_admin_contacts(
+    _admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> list[dict[str, Any]]:
+    getter = getattr(store, "admin_contacts", None)
+    if getter is None:
+        return []
+    rows = getter()
+    return [
+        {**r, "display": display_phone(r["phone_e164"]),
+         "created_at": r["created_at"].isoformat() if r.get("created_at") else None}
+        for r in rows
+    ]
+
+
+@app.post("/settings/admin-contacts")
+def add_admin_contact(
+    body: AdminContactIn,
+    admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    try:
+        phone = normalize_phone(body.phone)
+    except InvalidPhone as exc:
+        raise HTTPException(422, str(exc)) from exc
+    label = body.label.strip()
+    if not label:
+        raise HTTPException(422, "Beri nama supaya nomornya bisa dikenali nanti")
+
+    adder = getattr(store, "add_admin_contact", None)
+    if adder is None:
+        raise HTTPException(501, "Penyimpanan ini belum mendukung kontak petugas")
+    if not adder(phone, label, admin.admin_id, notify=body.notify):
+        raise HTTPException(409, "Nomor ini sudah terdaftar")
+    store.audit("admin_contact_added", admin.admin_id, None,
+                {"phone": phone, "label": label})
+    return {"phone_e164": phone, "display": display_phone(phone), "label": label}
+
+
+@app.delete("/settings/admin-contacts/{contact_id}")
+def remove_admin_contact(
+    contact_id: int,
+    admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    remover = getattr(store, "remove_admin_contact", None)
+    if remover is None or not remover(contact_id):
+        raise HTTPException(404, "Nomor tidak ditemukan")
+    store.audit("admin_contact_removed", admin.admin_id, None, {"contact_id": contact_id})
+    return {"removed": contact_id}
 
 
 @app.get("/settings/agent")

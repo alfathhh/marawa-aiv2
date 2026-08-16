@@ -85,3 +85,188 @@ def dispatch_effects(
             channel.send_to_citizen(conversation.conversation_id, citizen_text_by_effect[effect_name])
 
     return notified
+
+
+# ---------------------------------------------------------------------------
+# Channel produksi — mengirim sungguhan lewat outbox
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class FanoutChannel:
+    """Kirim notifikasi ke SETIAP nomor petugas yang aktif.
+
+    Menggantikan satu JID grup. Alasan praktisnya: kantor kecil tidak selalu
+    punya grup WA khusus, dan notifikasi ke nomor perorangan lebih sulit
+    diabaikan daripada satu pesan lagi di grup yang sudah ramai.
+
+    Satu percakapan yang mengantre menghasilkan satu baris outbox PER petugas.
+    Kunci idempotensi memuat nomor tujuan, sehingga tiga petugas benar-benar
+    menerima tiga pesan — bukan satu pesan yang menabrak dua duplikat.
+    """
+
+    store: object
+    enabled: bool = True
+
+    def _recipients(self) -> list[str]:
+        getter = getattr(self.store, "admin_contacts", None)
+        if getter is None:
+            return []
+        try:
+            return [c["phone_e164"] for c in getter(only_notify=True)]
+        except Exception:  # noqa: BLE001
+            return []
+
+    def send_to_officer_group(self, text: str) -> None:
+        if not self.enabled:
+            return
+        recipients = self._recipients()
+        if not recipients:
+            _log_no_recipients()
+            return
+        for phone in recipients:
+            _enqueue_via(self.store, f"{phone}@s.whatsapp.net", text, "system")
+
+    def send_to_citizen(self, conversation_id: str, text: str) -> None:
+        _enqueue_via(self.store, conversation_id, text, "bot")
+
+
+_NO_RECIPIENT_LOGGED = False
+
+
+def _log_no_recipients() -> None:
+    global _NO_RECIPIENT_LOGGED
+    if not _NO_RECIPIENT_LOGGED:
+        import sys
+
+        print(
+            "[MARAWA] PERINGATAN: belum ada nomor petugas terdaftar. "
+            "Notifikasi antrean tidak sampai ke siapa pun — petugas hanya akan "
+            "tahu ada yang menunggu bila kebetulan membuka panel. "
+            "Tambahkan di Dashboard > Setelan > Nomor petugas.",
+            file=sys.stderr,
+        )
+        _NO_RECIPIENT_LOGGED = True
+
+
+def _enqueue_via(store: object, conversation_id: str, body: str, sender_type: str) -> bool:
+    from scripts.outbox_worker import SendRecord, idempotency_key
+
+    minute_bucket = int(datetime.now().timestamp() // 60)
+    key = idempotency_key(conversation_id, body, minute_bucket)
+
+    # marawa_outbox.conversation_id has an FK to marawa_conversations. A
+    # notification target (officer phone JID) is not a citizen conversation
+    # yet, so create it and mark it hidden before enqueueing. Fake/test stores
+    # may not expose these methods, hence guarded dispatch.
+    get_conversation = getattr(store, "get_conversation", None)
+    mark_staff = getattr(store, "mark_staff_channel", None)
+    if sender_type == "system" and get_conversation is not None:
+        get_conversation(conversation_id)
+        if mark_staff is not None:
+            mark_staff(conversation_id)
+
+    record = SendRecord(
+        outbox_id=f"ntf_{key[3:]}",
+        conversation_id=conversation_id,
+        body=body,
+        sender_type=sender_type,
+        state_version_at_enqueue=0,
+        idempotency_key=key,
+    )
+    enqueue = getattr(store, "enqueue_outbox", None)
+    if enqueue is None:
+        return False
+    return bool(enqueue(record))
+
+
+@dataclass
+class OutboxChannel:
+    """Kirim notifikasi lewat outbox yang sama dengan pesan biasa.
+
+    KENAPA LEWAT OUTBOX, BUKAN LANGSUNG KE BAILEYS
+    ----------------------------------------------
+    Alasannya sama persis dengan pesan warga: WhatsApp gagal dengan cara paling
+    canggung — pengiriman berhasil di sisi mereka, responsnya tidak sampai ke
+    kita. Notifikasi yang dikirim langsung dari handler akan hilang saat worker
+    sedang putus, dan justru saat worker putus itulah petugas paling perlu tahu.
+
+    Konsekuensi yang disengaja: notifikasi ikut antre bersama balasan warga,
+    dan ikut mendapat retry, idempotency, serta pencatatan yang sama.
+
+    KENAPA `conversation_id` GRUP PETUGAS DIPERLAKUKAN SEBAGAI PERCAKAPAN
+    --------------------------------------------------------------------
+    Supaya worker tidak perlu tahu apa pun tentang "notifikasi". Bagi worker itu
+    hanya baris outbox lain dengan tujuan berbeda. Satu jalur pengiriman, satu
+    tempat yang bisa salah.
+    """
+
+    store: object                      # Store atau PostgresStore
+    officer_group_id: str | None       # JID grup WA petugas, mis. "1203...@g.us"
+    enabled: bool = True
+
+    def _enqueue(self, conversation_id: str, body: str, sender_type: str) -> bool:
+        from scripts.outbox_worker import SendRecord, idempotency_key
+
+        # Kunci idempotensi memuat menit, bukan detik: dua pemicu dalam satu
+        # menit untuk percakapan yang sama adalah notifikasi ganda, bukan dua
+        # kejadian berbeda. Debounce di should_notify_officers menangani jendela
+        # yang lebih panjang; ini jaring pengaman terakhirnya.
+        minute_bucket = int(datetime.now().timestamp() // 60)
+        key = idempotency_key(conversation_id, body, minute_bucket)
+        record = SendRecord(
+            outbox_id=f"ntf_{key[3:]}",
+            conversation_id=conversation_id,
+            body=body,
+            sender_type=sender_type,
+            state_version_at_enqueue=0,
+            idempotency_key=key,
+        )
+        enqueue = getattr(self.store, "enqueue_outbox", None)
+        if enqueue is None:
+            return False
+        return bool(enqueue(record))
+
+    def send_to_officer_group(self, text: str) -> None:
+        if not self.enabled or not self.officer_group_id:
+            # Tidak dikonfigurasi bukan keadaan normal: panel yang tidak pernah
+            # memberi tahu siapa pun adalah panel yang tidak dibuka. Dicatat
+            # keras supaya ketahuan saat pemeriksaan, bukan ditelan diam-diam.
+            _log_missing_officer_group()
+            return
+        self._enqueue(self.officer_group_id, text, "system")
+
+    def send_to_citizen(self, conversation_id: str, text: str) -> None:
+        self._enqueue(conversation_id, text, "bot")
+
+
+_MISSING_LOGGED = False
+
+
+def _log_missing_officer_group() -> None:
+    global _MISSING_LOGGED
+    if not _MISSING_LOGGED:
+        import sys
+
+        print(
+            "[MARAWA] PERINGATAN: MARAWA_OFFICER_GROUP_JID belum di-set. "
+            "Notifikasi antrean tidak akan sampai ke siapa pun, dan petugas "
+            "hanya akan tahu ada yang menunggu bila kebetulan membuka panel.",
+            file=sys.stderr,
+        )
+        _MISSING_LOGGED = True
+
+
+def build_channel(store: object) -> NotificationChannel:
+    """Pilih channel berdasarkan lingkungan.
+
+    Produksi memakai outbox; pengembangan dan tes memakai penampung in-memory
+    supaya tidak ada pesan nyata terkirim saat menjalankan tes.
+    """
+    import os
+
+    if os.environ.get("MARAWA_ENV", "").lower() in ("production", "prod"):
+        # Daftar nomor dikelola dari dashboard, bukan env — supaya petugas bisa
+        # menambah/menghapus tanpa akses server dan tanpa restart.
+        return FanoutChannel(store=store)
+    return InMemoryChannel()

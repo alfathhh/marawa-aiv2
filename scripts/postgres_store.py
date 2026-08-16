@@ -131,9 +131,17 @@ class PostgresStore:
             return cur.rowcount == 1
 
     def list_conversations(self, limit: int = 100) -> list[ConversationState]:
+        """Kotak masuk petugas.
+
+        `is_staff_channel` dikecualikan: thread notifikasi ke nomor petugas
+        bukan warga yang menunggu, dan kalau ikut tampil ia menenggelamkan
+        orang yang benar-benar butuh dibantu — persis kebalikan dari tugas
+        papan triase ini.
+        """
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT {', '.join(CONVERSATION_COLUMNS)} FROM marawa_conversations "
+                "WHERE NOT is_staff_channel "
                 "ORDER BY last_activity_at DESC NULLS LAST LIMIT %s",
                 (limit,),
             )
@@ -148,7 +156,7 @@ class PostgresStore:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 f"SELECT {', '.join(CONVERSATION_COLUMNS)} FROM marawa_conversations "
-                "WHERE state <> 'IDLE_CLOSED'"
+                "WHERE state <> 'IDLE_CLOSED' AND NOT is_staff_channel"
             )
             return [_row_to_state(r) for r in cur.fetchall()]
 
@@ -396,3 +404,61 @@ class PostgresStore:
                 "FROM marawa_audit_log ORDER BY at DESC LIMIT 500"
             )
             return cur.fetchall()
+
+    # -- kontak petugas (migrasi 009) ------------------------------------
+
+    def admin_contacts(self, only_notify: bool = False) -> list[dict[str, Any]]:
+        clause = "WHERE active" + (" AND notify" if only_notify else "")
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT contact_id, phone_e164, label, admin_id, notify, "
+                "blocked_from_bot, active, created_at "
+                f"FROM marawa_admin_contacts {clause} ORDER BY label"
+            )
+            return cur.fetchall()
+
+    def add_admin_contact(
+        self, phone_e164: str, label: str, created_by: str,
+        admin_id: str | None = None, notify: bool = True,
+    ) -> bool:
+        """False bila nomor sudah terdaftar."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO marawa_admin_contacts "
+                "(phone_e164, label, admin_id, notify, created_by) "
+                "VALUES (%s,%s,%s,%s,%s) "
+                "ON CONFLICT (phone_e164) DO UPDATE SET "
+                "label=EXCLUDED.label, admin_id=EXCLUDED.admin_id, "
+                "notify=EXCLUDED.notify, active=true, created_by=EXCLUDED.created_by "
+                "WHERE NOT marawa_admin_contacts.active",
+                (phone_e164, label, admin_id, notify, created_by),
+            )
+            return cur.rowcount == 1
+
+    def remove_admin_contact(self, contact_id: int) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE marawa_admin_contacts SET active = false WHERE contact_id = %s",
+                (contact_id,),
+            )
+            return cur.rowcount == 1
+
+    def blocked_phones(self) -> set[str]:
+        """Nomor yang tidak boleh dilayani bot. Dibaca tiap pesan masuk, jadi
+        di-index; kalau nanti jadi hambatan, cache dengan TTL pendek — jangan
+        cache tanpa kedaluwarsa, karena nomor yang baru dihapus harus segera
+        bisa memakai bot lagi."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT phone_e164 FROM marawa_admin_contacts "
+                "WHERE active AND blocked_from_bot"
+            )
+            return {r["phone_e164"] for r in cur.fetchall()}
+
+    def mark_staff_channel(self, conversation_id: str) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE marawa_conversations SET is_staff_channel = true "
+                "WHERE conversation_id = %s",
+                (conversation_id,),
+            )
