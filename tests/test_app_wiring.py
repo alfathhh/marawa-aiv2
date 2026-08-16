@@ -11,7 +11,20 @@ from datetime import datetime, timezone
 import pytest
 from fastapi.testclient import TestClient
 
-from scripts.app import Store, app, get_store
+from scripts.app import Store, _build_store, app, get_store
+
+
+def test_build_store_switches_on_runtime_dsn(monkeypatch) -> None:
+    """MARAWA_RUNTIME_DSN selects PostgresStore; without it, in-memory.
+
+    Construction only — PostgresStore opens connections lazily, so no DB is
+    needed for this check."""
+    from scripts.postgres_store import PostgresStore
+
+    monkeypatch.delenv("MARAWA_RUNTIME_DSN", raising=False)
+    assert type(_build_store()) is Store
+    monkeypatch.setenv("MARAWA_RUNTIME_DSN", "dbname=unused_construction_only")
+    assert type(_build_store()) is PostgresStore
 
 
 @pytest.fixture()

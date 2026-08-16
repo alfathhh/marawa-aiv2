@@ -15,6 +15,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import os
 import threading
 import uuid
 from datetime import datetime, timezone
@@ -60,6 +61,7 @@ from scripts.outbox_worker import (
 )
 from scripts.scheduler import plan_sweep
 from scripts.notifications import InMemoryChannel, dispatch_effects
+from scripts.postgres_store import PostgresStore
 
 # ---------------------------------------------------------------------------
 # Storage interface — swap this, not the routes, for real Postgres
@@ -137,7 +139,22 @@ class Store:
         })
 
 
-STORE = Store()
+def _build_store() -> Store:
+    """PostgresStore when MARAWA_RUNTIME_DSN is set; in-memory otherwise.
+
+    The PostgreSQL store gives compare-and-swap that holds across processes and
+    survives restart (audit F); the in-memory store stays the default for
+    development and the existing wiring tests. Neither branch opens a
+    connection here — PostgresStore connects lazily per operation.
+    """
+    dsn = os.environ.get("MARAWA_RUNTIME_DSN")
+    if dsn:
+        store = PostgresStore(dsn, notification_channel=InMemoryChannel())
+        return store
+    return Store()
+
+
+STORE = _build_store()
 
 
 def get_store() -> Store:
