@@ -56,14 +56,14 @@ def test_migrations_up_and_down_cycle(isolated_env) -> None:
 
     result = runner_up(TEMP_ENV)
     applied = [item["migration_id"] for item in result["results"]]
-    assert applied == ["001", "002", "003", "004", "005", "006"], applied
+    assert applied == ["001", "002", "003", "004", "005", "006", "007"], applied
 
     with psycopg.connect(dsn) as connection:
         ledger = set(
             connection.execute("SELECT migration_id FROM marawa_migrations.schema_migrations").fetchall()
         )
-        # All six migrations are registered by the runner.
-        assert len(ledger) == 6
+        # All seven migrations are registered by the runner.
+        assert len(ledger) == 7
 
         # 001 effect: fixed serving columns exist.
         dynamic_columns = {

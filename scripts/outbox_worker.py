@@ -61,6 +61,13 @@ class SendRecord:
     body: str
     sender_type: str
     state_version_at_enqueue: int
+    # AUDIT U: this field existed on `OutboxEntry` (used by authorize_send) but
+    # NOT on `SendRecord` (used by the worker and the store). Two types modelling
+    # the same thing, disagreeing. The consequence is concrete: the
+    # "reassigned_to_other_admin" guard in authorize_send could never fire on
+    # the real path, so a reply from an officer who no longer holds the
+    # conversation would be sent to the citizen anyway.
+    sender_admin_id: str | None = None
     status: SendStatus = SendStatus.PENDING
     attempts: int = 0
     claimed_at: datetime | None = None
