@@ -59,7 +59,8 @@ def test_golden_episode_harness_llm_mode_documents_blocker() -> None:
         assert report["episodes_total"] == 19
         assert (
             report["episodes_passed"]
-            + report["episodes_failed"]
+            + report["episodes_passed_soft"]
+            + report["episodes_failed_hard"]
             + report.get("episodes_not_evaluated", 0)
             == 19
         )

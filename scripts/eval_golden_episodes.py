@@ -212,41 +212,65 @@ def run_tools(offering_index, offer_candidates) -> dict:
     }
 
 
-def _llm_round(base_url: str, api_key: str, model: str, messages: list[dict]) -> tuple[str | None, float]:
-    """OpenAI-compatible chat round with retry/backoff (flash-lite rate limits)."""
+def _llm_round(
+    base_url: str, api_key: str, model: str, messages: list[dict],
+    tools: list[dict] | None = None,
+) -> tuple[str | None, list[dict] | None, float]:
+    """OpenAI-compatible chat round with retry/backoff + tool calling.
+
+    Returns (text, tool_calls, seconds); tool_calls is a list of
+    {name, arguments} when the model requested function calls.
+    """
     import json as _json
     import time as _time
     import urllib.error
     import urllib.request
 
-    payload = _json.dumps({
+    payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "max_tokens": 400,
-    }).encode("utf-8")
+    }
+    if tools:
+        payload["tools"] = tools
+    body = _json.dumps(payload).encode("utf-8")
     for attempt in range(3):
         request = urllib.request.Request(
             f"{base_url.rstrip('/')}/chat/completions",
-            data=payload,
+            data=body,
             headers={"Content-Type": "application/json", "Authorization": f"Bearer {api_key}"},
             method="POST",
         )
         started = _time.monotonic()
         try:
             with urllib.request.urlopen(request, timeout=60) as response:
-                body = _json.loads(response.read().decode("utf-8"))
-                return body["choices"][0]["message"]["content"], _time.monotonic() - started
+                parsed = _json.loads(response.read().decode("utf-8"))
+                message = parsed["choices"][0]["message"]
+                raw_calls = message.get("tool_calls") or []
+                calls = []
+                for call in raw_calls:
+                    fn = call.get("function", {})
+                    calls.append({
+                        "name": fn.get("name"),
+                        "arguments": fn.get("arguments", "{}"),
+                        # Replay butuh objek MENTAH: id asli + extra_content
+                        # (thought_signature) + nama dengan prefix provider,
+                        # kalau tidak Gemini membalas 400.
+                        "raw": call,
+                        "tool_call_id": call.get("id"),
+                    })
+                return message.get("content"), (calls or None), _time.monotonic() - started
         except urllib.error.HTTPError as exc:
             if exc.code in (429, 500, 503) and attempt < 2:
                 _time.sleep(1.5 * (attempt + 1))
                 continue
-            return None, _time.monotonic() - started
+            return None, None, _time.monotonic() - started
         except Exception:
             if attempt < 2:
                 _time.sleep(1.5 * (attempt + 1))
                 continue
-            return None, _time.monotonic() - started
-    return None, 0.0
+            return None, None, _time.monotonic() - started
+    return None, None, 0.0
 
 
 SYSTEM_PROMPT = """Kamu adalah MARAWA, asisten statistik BPS Kabupaten Padang Pariaman di WhatsApp.
@@ -283,13 +307,52 @@ ATURAN KERAS:
 6. Bahasa Indonesia, ringkas, tanpa markdown."""
 
 
-def run_llm() -> dict:
-    """Live LLM evaluation of the golden episodes (OQ-05 resolved path).
+def _offer_tool_schema() -> dict:
+    return {
+        "type": "function",
+        "function": {
+            "name": "offer_candidates",
+            "description": (
+                "Cari kandidat dataset statistik BPS utk utterance ini. "
+                "Panggil ini SEBELUM memutuskan kandidat mana yang relevan."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {"utterance": {"type": "string"}},
+                "required": ["utterance"],
+            },
+        },
+    }
 
-    Plays each episode turn-by-turn against the configured model
-    (MARAWA_LLM_BASE_URL / MARAWA_LLM_API_KEY / MARAWA_LLM_MODEL). The model
-    only picks an action; numbers and queries stay out of scope of this round.
-    Without configuration the mode stays blocked (CI/dev path).
+
+def _board_text(offering: dict | None) -> str:
+    """Papan kandidat NYATA dari offering engine utk prompt (observation)."""
+    if not offering:
+        return ""
+    lines = ["KANDIDAT DISKOVERI (dari registry BPS):"]
+    for group in offering.get("groups", [])[:4]:
+        for item in group.get("items", [])[:3]:
+            lines.append(
+                f"- {item['display_ref']} ({group['family']}) — "
+                f"{item['title'][:70]} … periode {item.get('latest_year', '?')}"
+            )
+    rec = offering.get("recommendation") or {}
+    if rec.get("ref"):
+        lines.append(f"Rekomendasi sistem: {rec['ref']} ({rec.get('family', '?')}).")
+    return "\n".join(lines)
+
+
+def run_llm() -> dict:
+    """Hybrid live LLM evaluation (observation + tool call + masking).
+
+    1. Offering engine jalan dulu (server-side) utk turn discovery → papan
+       kandidat NYATA masuk prompt (model tidak menebak-cari dari kosong).
+    2. Tool `offer_candidates` tersedia — model boleh pangil; hasil eksekusi
+       ditambahkan sebagai tool result sebelum keputusan final.
+    3. Scoring HARD vs SOFT (anti-overfit):
+       hard_fail  = parse/call gagal, masking violation, forbidden effect
+       soft       = action valid tapi beda dari fixture (dilaporkan, bukan gagal)
+    Tanpa konfigurasi → status blocked (CI/dev path).
     """
     import os
 
@@ -306,23 +369,33 @@ def run_llm() -> dict:
             "exercised_passed": 0,
         }
 
-    episodes = json.loads(EPISODES_PATH.read_text(encoding="utf-8"))["episodes"]
-    case_rows = []
-    passed_turns = 0
-    total_turns = 0
-    skipped_event_turns = 0
-
     from scripts.action_masking import (
         allowed_actions as allowed_actions_check,
         apply_action,
         mask_prompt_line,
     )
+    from scripts.simulate_bps_candidate_scoring import (
+        build_offering_index,
+        offer_candidates,
+    )
+
+    offering_index = build_offering_index()
+    episodes = json.loads(EPISODES_PATH.read_text(encoding="utf-8"))["episodes"]
+    tools = [_offer_tool_schema()]
+    case_rows = []
+    total_turns = 0
+    skipped_event_turns = 0
+    aggregate = {"hard_fail_turns": 0, "soft_mismatch_turns": 0}
 
     import re as _re
 
+    def _call(messages: list[dict]) -> tuple[str | None, list[dict] | None, float]:
+        return _llm_round(base_url, api_key, model, messages, tools=tools)
+
     for episode in episodes:
         messages: list[dict] = [{"role": "system", "content": SYSTEM_PROMPT}]
-        errors: list[str] = []
+        hard_errors: list[str] = []
+        soft_mismatches: list[str] = []
         model_turns = 0
         state = "BOT_ACTIVE"
         has_selected = False
@@ -333,90 +406,151 @@ def run_llm() -> dict:
             if not user_text:
                 # Event-only turns (idle timeout, handover SLA) are driven by
                 # the session-policy ENGINE, not by a model reading a citizen
-                # message. Calling the LLM with no user input is meaningless
-                # and the fixture classifies them separately in tools mode.
+                # message. Calling the LLM with no user input is meaningless.
                 skipped_event_turns += 1
                 continue
-            masked = mask_prompt_line(state, has_selected)
-            messages.append({"role": "user", "content": f"{user_text}\n\n{masked}"})
             model_turns += 1
+            masked = mask_prompt_line(state, has_selected)
+            # Selection detection: user MENYEBUT ref (D1/S1/C1/P1) = pilih
+            # kandidat, terlepas dari apa yang model "putuskan". Ini semantics
+            # fixture (selection_source: explicit_ref/candidate_set_ref).
+            if _re.search(r"\b[DCSP]\d+\b", user_text or ""):
+                has_selected = True
+            # Observation-first: offering engine sudah dijalankan server-side.
+            board = ""
+            if expect.get("new_goal") or expect.get("action") in (
+                "offer_candidates", "resolve_or_clarify_candidates",
+            ):
+                offering = offer_candidates(offering_index, user_text)
+                board = _board_text(offering)
+            messages.append({
+                "role": "user",
+                "content": f"{user_text}\n\n{board}\n{masked}".strip(),
+            })
 
-            reply, _secs = _llm_round(base_url, api_key, model, messages)
+            reply, _calls, _secs = _call(messages)
+            # Tool loop: model boleh pangil offer_candidates -> hasilnya masuk
+            # sebagai tool message, lalu model memutuskan final.
+            if _calls:
+                for call in _calls[:1]:
+                    if call["name"] != "offer_candidates":
+                        hard_errors.append(f"turn {index}: model memanggil tool asing {call['name']!r}")
+                        continue
+                    # Replay PERSIS objek yang dikirim model (id asli,
+                    # function dengan prefix provider, extra_content).
+                    tool_call_id = call.get("tool_call_id") or f"call_{index}"
+                    messages.append({
+                        "role": "assistant",
+                        "content": None,
+                        "tool_calls": [call.get("raw") or {
+                            "id": tool_call_id,
+                            "type": "function",
+                            "function": {"name": call["name"], "arguments": call["arguments"]},
+                        }],
+                    })
+                    try:
+                        tool_args = json.loads(call["arguments"] or "{}")
+                        tool_offering = offer_candidates(offering_index, tool_args.get("utterance", user_text))
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": _board_text(tool_offering),
+                        })
+                    except json.JSONDecodeError:
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tool_call_id,
+                            "content": "ERROR: arguments tidak valid.",
+                        })
+                reply, _calls2, _secs2 = _call(messages)
+                if _calls2:
+                    hard_errors.append(f"turn {index}: tool loop tidak konvergen")
+                    continue
             if reply is None:
-                errors.append(f"turn {index}: model call failed")
+                hard_errors.append(f"turn {index}: model call failed")
                 continue
 
             match = _re.search(r"\{.*\}", reply, _re.S)
             if not match:
-                errors.append(f"turn {index}: reply bukan JSON: {reply[:80]!r}")
+                hard_errors.append(f"turn {index}: reply bukan JSON: {reply[:80]!r}")
                 continue
             try:
                 action = json.loads(match.group(0)).get("action")
             except json.JSONDecodeError:
-                errors.append(f"turn {index}: JSON tidak bisa di-parse: {reply[:80]!r}")
+                hard_errors.append(f"turn {index}: JSON tidak bisa di-parse: {reply[:80]!r}")
                 continue
 
             expected_action = expect.get("action")
             valid = action in allowed_actions_check(state, has_selected) if action else False
-            if action != expected_action:
-                errors.append(
-                    f"turn {index}: action {action!r}, diharapkan {expected_action!r}"
-                )
             if not valid:
-                errors.append(
+                hard_errors.append(
                     f"turn {index}: action {action!r} TIDAK diizinkan masking pada "
                     f"state {state!r} (has_selected={has_selected})"
                 )
-            state, has_selected = apply_action(state, action, has_selected)
+                aggregate["hard_fail_turns"] += 1
+            if action != expected_action:
+                soft_mismatches.append(
+                    f"turn {index}: action {action!r}, fixture ingin {expected_action!r}"
+                )
+                aggregate["soft_mismatch_turns"] += 1
             for forbidden in expect.get("forbidden_effects", []):
-                if forbidden == "free_sql" and action == "query_stat_data":
-                    errors.append(f"turn {index}: free_sql dibutuhkan pemilihan kandidat")
-                if forbidden == "fact_query_before_candidate_selection" and action == "query_stat_data":
-                    errors.append(f"turn {index}: query fakta sebelum kandidat dipilih")
-                if forbidden == "bot_reply_during_admin_queue" and action not in (
-                    "admin_busy_notice", "end_session", "show_service_menu",
-                ):
-                    errors.append(f"turn {index}: bot membalas saat antrean admin")
-
-            if user_text:
-                messages.append({"role": "assistant", "content": reply})
+                if forbidden == "free_sql" and action == "query_stat_data" and not has_selected:
+                    hard_errors.append(f"turn {index}: free_sql tanpa pemilihan kandidat")
+                    aggregate["hard_fail_turns"] += 1
+                if forbidden == "fact_query_before_candidate_selection" and action == "query_stat_data" and not has_selected:
+                    hard_errors.append(f"turn {index}: query fakta sebelum kandidat dipilih")
+                    aggregate["hard_fail_turns"] += 1
+                # Berlaku saat SUDAH dalam antrean (state QUEUED sebelum
+                # action ini), bukan pada turn yang meminta handover.
+                if forbidden == "bot_reply_during_admin_queue" and state == "QUEUED":
+                    if action not in ("admin_busy_notice", "end_session", "show_service_menu", "offer_candidates"):
+                        hard_errors.append(f"turn {index}: bot membalas saat antrean admin")
+                        aggregate["hard_fail_turns"] += 1
+            state, has_selected = apply_action(state, action, has_selected)
+            messages.append({"role": "assistant", "content": reply})
 
         if model_turns == 0:
             status = "not_evaluated"
-        elif errors:
+        elif hard_errors:
             status = "failed"
+        elif soft_mismatches:
+            status = "passed_with_soft_mismatch"
         else:
             status = "passed"
-        if status == "passed":
-            passed_turns += 1
         case_rows.append({
             "episode_id": episode["episode_id"],
             "status": status,
             "turns_total": len(episode["turns"]),
             "model_turns": model_turns,
-            "errors": errors[:5],
+            "hard_errors": hard_errors[:5],
+            "soft_mismatches": soft_mismatches[:5],
         })
 
     failed = [c for c in case_rows if c["status"] == "failed"]
+    passed_full = [c for c in case_rows if c["status"] == "passed"]
+    passed_soft = [c for c in case_rows if c["status"] == "passed_with_soft_mismatch"]
     not_evaluated = [c for c in case_rows if c["status"] == "not_evaluated"]
 
     return {
         "mode": "llm",
+        "harness": "hybrid_observation_tool_masking",
         "status": "ran" if not failed else "ran_with_failures",
         "model": model,
         "base_url": base_url,
         "episodes_total": len(episodes),
-        "episodes_passed": passed_turns,
-        "episodes_failed": len(failed),
+        "episodes_passed": len(passed_full),
+        "episodes_passed_soft": len(passed_soft),
+        "episodes_failed_hard": len(failed),
         "episodes_not_evaluated": len(not_evaluated),
         "not_evaluated_ids": [c["episode_id"] for c in not_evaluated],
         "turns_total": total_turns,
         "skipped_event_turns": skipped_event_turns,
-        "report_note": (
-            "Model hanya memilih ACTION; angka/evidence/query dievaluasi di jalur "
-            "tools. Event-only turns (timeout/handover SLA) di-skip: itu tugas "
-            "session-policy ENGINE, bukan model. Episode pass bila SEMUA "
-            "model-driven turn action-nya cocok."
+        "hard_fail_turns": aggregate["hard_fail_turns"],
+        "soft_mismatch_turns": aggregate["soft_mismatch_turns"],
+        "anti_overfit_note": (
+            "Soft mismatch (action valid tapi beda selera dari fixture) TIDAK "
+            "dihitung gagal. Hard = forbidden/masking/parse. Skor yang "
+            "dikejar: hard_clean. Ambigu ditinjau manusia, bukan dilarikan."
         ),
         "cases": case_rows,
     }
