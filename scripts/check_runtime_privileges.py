@@ -158,7 +158,7 @@ def main() -> int:
     parser.add_argument("--json", action="store_true")
     args = parser.parse_args()
 
-    with psycopg.connect(load_postgres_dsn()) as connection:
+    with psycopg.connect(load_postgres_dsn((Path(__file__).resolve().parent.parent / ".env").resolve())) as connection:
         failures = check(connection)
 
     if args.json:

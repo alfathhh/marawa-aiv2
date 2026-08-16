@@ -117,9 +117,11 @@ JOIN bps_simdasi_tables t
 LEFT JOIN bps_simdasi_columns c
   ON c.table_id = f.table_id AND c.column_id = f.column_id
 LEFT JOIN bps_simdasi_units u
-  ON u.table_id = f.table_id AND u.column_id = f.column_id
-LEFT JOIN bps_simdasi_documents d
-  ON d.table_id = f.table_id;
+  ON u.region_code = f.region_code AND u.table_code = t.table_code
+ AND u.column_name = c.name
+LEFT JOIN bps_simdasi_details d
+  ON d.region_code = f.region_code AND d.table_id = f.table_id
+ AND d.year = f.year;
 
 -- ============================================================
 -- 3. Re-grant (audit H3) — DROP VIEW dropped these
@@ -130,6 +132,22 @@ GRANT SELECT ON public.bps_serving_simdasi TO marawa_runtime_ro;
 -- ============================================================
 -- 4. Registry: measure-level answerability gate (audit C2c)
 -- ============================================================
+-- Audit 2026-08-15 (M3): _aggregation() can return 'unknown' for measures
+-- whose unit is not established. The enum must soundly include it.
+ALTER TABLE bps_registry.measure_registry
+    DROP CONSTRAINT IF EXISTS measure_registry_aggregation_semantics_check;
+ALTER TABLE bps_registry.measure_registry
+    ADD CONSTRAINT measure_registry_aggregation_semantics_check
+    CHECK (aggregation_semantics IN ('additive','non_additive','index','rate','share','count','unknown'));
+
+-- Audit 2026-08-15 (C2a): title-derived units are guesses, not settled units.
+-- Accept the 'review_required' state the builder now emits for them.
+ALTER TABLE bps_registry.measure_registry
+    DROP CONSTRAINT IF EXISTS measure_registry_unit_state_check;
+ALTER TABLE bps_registry.measure_registry
+    ADD CONSTRAINT measure_registry_unit_state_check
+    CHECK (unit_state IN ('known','unitless','unknown_review','review_required'));
+
 ALTER TABLE bps_registry.measure_registry
     ADD COLUMN IF NOT EXISTS queryable boolean NOT NULL DEFAULT true;
 ALTER TABLE bps_registry.measure_registry

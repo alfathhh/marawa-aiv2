@@ -88,9 +88,11 @@ JOIN bps_simdasi_tables t
 LEFT JOIN bps_simdasi_columns c
   ON c.table_id = f.table_id AND c.column_id = f.column_id
 LEFT JOIN bps_simdasi_units u
-  ON u.table_id = f.table_id AND u.column_id = f.column_id
+  ON u.region_code = f.region_code AND u.table_code = t.table_code
+ AND u.column_name = c.name
 LEFT JOIN bps_simdasi_documents d
-  ON d.table_id = f.table_id;
+  ON d.region_code = f.region_code AND d.table_id = f.table_id
+ AND d.year = f.year;
 
 GRANT SELECT ON public.bps_serving_dynamic TO marawa_runtime_ro;
 GRANT SELECT ON public.bps_serving_simdasi TO marawa_runtime_ro;

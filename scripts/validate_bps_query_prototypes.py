@@ -183,7 +183,7 @@ CASES = [
         "Exact point lookup with explicit total category",
         """SELECT value,unit,snapshot_id FROM bps_serving_dynamic
            WHERE domain='1306' AND indicator_code='29' AND period='2025'
-             AND geography_name='Kabupaten Padang Pariaman' AND category='Total'""",
+             AND geography_name='Kabupaten Padang Pariaman' AND category_label='Total'""",
         exact_total,
     ),
     QueryCase(
@@ -191,7 +191,7 @@ CASES = [
         "Per-kecamatan breakdown and coverage invariant",
         """SELECT count(*),count(value),count(DISTINCT geography_name),sum(value)
            FROM bps_serving_dynamic WHERE domain='1306' AND indicator_code='29' AND period='2025'
-             AND category='Total' AND geography_name<>'Kabupaten Padang Pariaman'""",
+             AND category_label='Total' AND geography_name<>'Kabupaten Padang Pariaman'""",
         breakdown,
     ),
     QueryCase(
@@ -199,7 +199,7 @@ CASES = [
         "Ordered trend and deterministic two-period comparison",
         """SELECT period,value FROM bps_serving_dynamic
            WHERE domain='1306' AND indicator_code='29' AND geography_name='Kabupaten Padang Pariaman'
-             AND category='Total' AND period BETWEEN '2020' AND '2025' ORDER BY period""",
+             AND category_label='Total' AND period BETWEEN '2020' AND '2025' ORDER BY period""",
         trend_compare,
     ),
     QueryCase(
@@ -297,7 +297,7 @@ CASES = [
              SELECT 'simdasi_category_cells_mislabeled_kecamatan' name,count(*)::bigint value
              FROM bps_serving_simdasi s JOIN role r USING(table_code) WHERE NOT r.has_geo AND s.geography_level='kecamatan'
              UNION ALL SELECT 'dynamic_visible_duplicate_keys',count(*) FROM (
-               SELECT indicator_code,period,geography_code,coalesce(secondary_dimension_id,''),coalesce(subperiod_code,'')
+               SELECT indicator_code,period,geography_code,coalesce(category_code,''),coalesce(subperiod_code,'')
                FROM bps_serving_dynamic
                GROUP BY 1,2,3,4,5 HAVING count(*)>1
              ) x
@@ -311,7 +311,7 @@ CASES = [
     QueryCase(
         "source_precision_comparability",
         "Dynamic exact value and rounded SIMDASI value are comparable",
-        """WITH d AS (SELECT value FROM bps_serving_dynamic WHERE domain='1306' AND indicator_code='29' AND period='2025' AND geography_name='Kabupaten Padang Pariaman' AND category='Total'),
+        """WITH d AS (SELECT value FROM bps_serving_dynamic WHERE domain='1306' AND indicator_code='29' AND period='2025' AND geography_name='Kabupaten Padang Pariaman' AND category_label='Total'),
            s AS (SELECT value*1000 value FROM bps_serving_simdasi WHERE region_code='1306000' AND table_code='3.1.1' AND period=2025 AND indicator_name='Jumlah Penduduk' AND geography_level='kabupaten')
            SELECT d.value,s.value,d.value-s.value,round(100*abs(d.value-s.value)/d.value,6),round(d.value/1000,1)=s.value/1000 FROM d,s""",
         source_precision,

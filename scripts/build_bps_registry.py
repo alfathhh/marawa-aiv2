@@ -488,11 +488,11 @@ def _build_simdasi(
         measure_rows = _fetch(
             connection,
             """
-            SELECT indicator_name, unit, unit_source, indicator_code
+            SELECT DISTINCT ON (indicator_code) indicator_name, unit, unit_source, indicator_code
             FROM bps_serving_simdasi
             WHERE region_code='1306000' AND table_code=%s
               AND indicator_name IS NOT NULL
-            GROUP BY 1,2,3,4
+            ORDER BY indicator_code, unit_source NULLS LAST, unit NULLS LAST
             """,
             (table_code,),
         )
@@ -966,15 +966,18 @@ def run_integrity_gates(
 ) -> list[str]:
     errors: list[str] = []
     for template in template_rows:
-        template_id = template["template_id"]
-        sql = template["sql_template"]
-        if template["view_name"] not in ALLOWED_VIEWS:
-            errors.append(f"template {template_id} uses non-allowlisted view {template['view_name']}")
-        if ":" in template["view_name"]:
+        template_id = template.get("template_id", "?")
+        sql = template.get("sql_template")
+        if sql is None:
+            errors.append(f"template {template_id} missing sql_template")
+            sql = ""
+        if template.get("view_name") not in ALLOWED_VIEWS:
+            errors.append(f"template {template_id} uses non-allowlisted view {template.get('view_name')}")
+        if ":" in (template.get("view_name") or ""):
             errors.append(f"template {template_id} view name must be unqualified")
         # Every declared parameter must actually be applied in the SQL, otherwise
         # the runtime silently ignores a filter the agent believes it applied.
-        for name in template["parameter_schema"]:
+        for name in template.get("parameter_schema", {}):
             if f"%({name})s" not in sql:
                 errors.append(f"template {template_id} declares unused parameter {name!r}")
         # Audit H1: limit ownership is declared, never sniffed from the SQL text.

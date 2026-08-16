@@ -151,7 +151,7 @@ def test_dimension_roles_are_deterministic(connection) -> None:
 
 def test_integrity_gates_reject_unknown_view(connection) -> None:
     fake_rows = [
-        {"template_id": "bad", "view_name": "pg_catalog.pg_class", "dataset_shape": "geography_series"},
+        {"template_id": "bad", "view_name": "pg_catalog.pg_class", "dataset_shape": "geography_series", "sql_template": "SELECT 1", "has_own_limit": False, "parameter_schema": {}},
     ]
     errors = run_integrity_gates(connection, fake_rows, datasets=[], measures=[], dimensions=[])
     assert any("view" in error.lower() for error in errors)
