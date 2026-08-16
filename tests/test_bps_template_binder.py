@@ -26,7 +26,7 @@ def connection():
 def templates(connection):
     return connection.execute(
         """
-        SELECT template_id, parameter_schema, sql_template, row_limit, timeout_ms
+        SELECT template_id, parameter_schema, sql_template, row_limit, timeout_ms, has_own_limit
         FROM bps_registry.query_template_registry t
         JOIN bps_registry.registry_versions v USING (registry_version_id)
         WHERE v.status='published'
@@ -36,7 +36,7 @@ def templates(connection):
 
 def test_every_declared_parameter_is_used_in_sql(templates) -> None:
     param_re = re.compile(r"%\((\w+)\)s")
-    for template_id, schema, sql, _row_limit, _timeout in templates:
+    for template_id, schema, sql, _row_limit, _timeout, _has_limit in templates:
         declared = set(schema.keys())
         used = set(param_re.findall(sql))
         missing = declared - used
@@ -48,7 +48,7 @@ def test_every_declared_parameter_is_used_in_sql(templates) -> None:
 def test_bind_template_valid_dynamic_point_returns_rows(connection, templates) -> None:
     template = None
     for row in templates:
-        template_id, schema, sql, row_limit, timeout = row
+        template_id, schema, sql, row_limit, timeout, has_own_limit = row
         if template_id == "dynamic_point":
             template = {
                 "template_id": template_id,
@@ -56,6 +56,7 @@ def test_bind_template_valid_dynamic_point_returns_rows(connection, templates) -
                 "sql_template": sql,
                 "row_limit": row_limit,
                 "timeout_ms": timeout,
+                "has_own_limit": has_own_limit,
             }
             break
     assert template is not None, "dynamic_point template not found"
@@ -74,12 +75,14 @@ def test_bind_template_rejects_unknown_parameter(templates) -> None:
     sql_map = {t[0]: t[2] for t in templates}
     row_limit = {t[0]: t[3] for t in templates}
     timeout = {t[0]: t[4] for t in templates}
+    own = {t[0]: t[5] for t in templates}
     template = {
         "template_id": "dynamic_trend",
         "parameter_schema": schema["dynamic_trend"],
         "sql_template": sql_map["dynamic_trend"],
         "row_limit": row_limit["dynamic_trend"],
         "timeout_ms": timeout["dynamic_trend"],
+        "has_own_limit": own["dynamic_trend"],
     }
     with pytest.raises(TemplateValidationError, match="unknown"):
         bind_template(template, {"indicator_code": "29", "hacked_column": "x"})
@@ -90,12 +93,14 @@ def test_bind_template_rejects_missing_required(templates) -> None:
     sql_map = {t[0]: t[2] for t in templates}
     row_limit = {t[0]: t[3] for t in templates}
     timeout = {t[0]: t[4] for t in templates}
+    own = {t[0]: t[5] for t in templates}
     template = {
         "template_id": "simdasi_point",
         "parameter_schema": schema["simdasi_point"],
         "sql_template": sql_map["simdasi_point"],
         "row_limit": row_limit["simdasi_point"],
         "timeout_ms": timeout["simdasi_point"],
+        "has_own_limit": own["simdasi_point"],
     }
     with pytest.raises(TemplateValidationError, match="required"):
         bind_template(template, {})
@@ -106,12 +111,14 @@ def test_bind_template_rejects_wrong_type(templates) -> None:
     sql_map = {t[0]: t[2] for t in templates}
     row_limit = {t[0]: t[3] for t in templates}
     timeout = {t[0]: t[4] for t in templates}
+    own = {t[0]: t[5] for t in templates}
     template = {
         "template_id": "publication_list",
         "parameter_schema": schema["publication_list"],
         "sql_template": sql_map["publication_list"],
         "row_limit": row_limit["publication_list"],
         "timeout_ms": timeout["publication_list"],
+        "has_own_limit": own["publication_list"],
     }
     with pytest.raises(TemplateValidationError, match="type"):
         bind_template(template, {"page_size": "seratus", "offset": 0})
@@ -122,12 +129,14 @@ def test_bind_template_is_injection_safe(connection, templates) -> None:
     sql_map = {t[0]: t[2] for t in templates}
     row_limit = {t[0]: t[3] for t in templates}
     timeout = {t[0]: t[4] for t in templates}
+    own = {t[0]: t[5] for t in templates}
     template = {
         "template_id": "dynamic_point",
         "parameter_schema": schema["dynamic_point"],
         "sql_template": sql_map["dynamic_point"],
         "row_limit": row_limit["dynamic_point"],
         "timeout_ms": timeout["dynamic_point"],
+        "has_own_limit": own["dynamic_point"],
     }
     sql, params = bind_template(
         template,

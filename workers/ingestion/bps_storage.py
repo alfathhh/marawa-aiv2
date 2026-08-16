@@ -377,13 +377,11 @@ DROP VIEW IF EXISTS bps_serving_dynamic;
 CREATE VIEW bps_serving_dynamic AS
 SELECT f.domain, f.variable_id AS indicator_code, f.variable_label AS indicator_name,
        f.vertical_id AS geography_code, f.vertical_label AS geography_name,
-       f.vertical_id AS primary_dimension_id, f.vertical_label AS primary_dimension_label,
-       f.derived_variable_id AS secondary_dimension_id, f.derived_variable_label AS secondary_dimension_label,
+       f.derived_variable_id AS category_code, f.derived_variable_label AS category_label,
        f.period_label AS period,
        CASE WHEN f.derived_period_label IS NOT NULL AND f.derived_period_label <> f.period_label
             THEN 'quarterly' ELSE 'annual' END AS period_granularity,
        f.derived_period_id AS subperiod_code, f.derived_period_label AS subperiod_label,
-       f.derived_variable_label AS category,
        f.value_numeric AS value, f.value_text,
        f.unit AS unit_raw,
        coalesce(v.unit_canonical, f.unit) AS unit,
@@ -449,6 +447,15 @@ SELECT f.region_code, f.table_id, t.table_code, t.title AS table_title,
            WHEN t.title ILIKE '%ribu rupiah%' THEN 'title_matched'
            ELSE coalesce(u.unit_source, CASE WHEN c.unit IS NOT NULL THEN 'column_meta' END)
        END AS unit_source,
+       CASE
+           WHEN t.title ILIKE '%miliar rupiah%'
+             OR t.title ILIKE '%juta rupiah%'
+             OR t.title ILIKE '%ribu rupiah%' THEN 'review_required'
+           WHEN coalesce(c.unit, u.unit, f.row_unit) IS NULL
+             OR coalesce(c.unit, u.unit, f.row_unit) IN ('', 'Tidak Ada Satuan')
+           THEN 'unknown_review'
+           ELSE 'known'
+       END AS unit_state,
        d.source_created_at, f.snapshot_id
 FROM bps_simdasi_facts f
 JOIN bps_simdasi_tables t

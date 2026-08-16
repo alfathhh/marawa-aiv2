@@ -125,7 +125,7 @@ def test_blocked_quality_datasets_have_explicit_reason(admin_connection) -> None
     blocked, flagged = admin_connection.execute(
         """
         SELECT count(*), count(*) FILTER (
-            WHERE d.quality_flags @> ARRAY['unit_review_required']::text[]
+            WHERE d.quality_flags && ARRAY['unit_review_required','unit_guessed_review_required']::text[]
         )
         FROM bps_registry.dataset_registry d
         JOIN bps_registry.registry_versions v USING (registry_version_id)

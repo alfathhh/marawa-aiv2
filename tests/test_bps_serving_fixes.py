@@ -40,10 +40,10 @@ def test_dynamic_serving_view_has_no_visible_duplicate_keys(connection) -> None:
         """
         SELECT count(*)
         FROM (
-            SELECT domain, indicator_code, geography_code, geography_name, period,
-                   category, coalesce(subperiod_label,'') AS subperiod
+            SELECT domain, indicator_code, geography_code, period,
+                   category_code, coalesce(subperiod_code,'') AS subperiod
             FROM bps_serving_dynamic
-            GROUP BY 1,2,3,4,5,6,7
+            GROUP BY 1,2,3,4,5,6
             HAVING count(*) > 1
         ) dup
         """
