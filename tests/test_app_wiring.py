@@ -14,6 +14,60 @@ from fastapi.testclient import TestClient
 from scripts.app import Store, _build_store, app, get_store
 
 
+def test_totp_login_flow_issues_session_and_bearer_works(monkeypatch) -> None:
+    """docs/06 §4: login via TOTP, then Bearer session token at /admin/session.
+
+    Runs in forced secure mode so X-Admin-Id is NOT accepted here.
+    """
+    import time as _time
+
+    from scripts.totp_session import new_totp_secret, totp_at
+
+    monkeypatch.setattr("scripts.totp_session._SESSION_KEY", "t" * 64)
+    monkeypatch.setattr("scripts.app.session_key_stable", lambda: True)
+
+    store = Store()
+    secret = new_totp_secret()
+    store.totp_secrets["seed-super-1"] = secret
+    app.dependency_overrides[get_store] = lambda: store
+    try:
+        client = TestClient(app)
+
+        # no session + no dev header in secure mode -> 401
+        assert client.get("/admin/session").status_code == 401
+
+        # wrong code -> 401
+        bad = client.post("/admin/login", json={"admin_id": "seed-super-1", "totp_code": "000000"})
+        assert bad.status_code == 401
+
+        # correct code -> token
+        code = totp_at(secret, int(_time.time()) // 30)
+        ok = client.post("/admin/login", json={"admin_id": "seed-super-1", "totp_code": code})
+        assert ok.status_code == 200, ok.text
+        token = ok.json()["token"]
+
+        # Bearer session works
+        me = client.get("/admin/session", headers={"Authorization": f"Bearer {token}"})
+        assert me.status_code == 200
+        assert me.json()["admin_id"] == "seed-super-1"
+        assert me.json()["role"] == "superadmin"
+
+        # tampered token -> 401
+        forged = client.get("/admin/session", headers={"Authorization": f"Bearer {token[:-1]}x"})
+        assert forged.status_code == 401
+
+        # enroll via superadmin Bearer
+        enroll = client.post(
+            "/admin/enroll-totp",
+            json={"admin_id": "seed-super-2"},
+            headers={"Authorization": f"Bearer {token}"},
+        )
+        assert enroll.status_code == 200
+        assert enroll.json()["otpauth_uri"].startswith("otpauth://")
+    finally:
+        app.dependency_overrides.clear()
+
+
 def test_build_store_switches_on_runtime_dsn(monkeypatch) -> None:
     """MARAWA_RUNTIME_DSN selects PostgresStore; without it, in-memory.
 

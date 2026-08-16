@@ -169,6 +169,15 @@ The following pre-migration statements were stale and have been corrected in the
 - ✅ **Retensi 365 hari (#5)**: `PostgresStore.apply_retention(retention_days=365)` — hapus `marawa_messages` > window, outbox terminal > window (pending/claimed tidak pernah), percakapan `IDLE_CLOSED` kosong > window; `marawa_audit_log` dikecualikan (append-only). Paragraf keputusan OQ-11 ditulis di `docs/15`. 2 tes lawan DB nyata (hapus yang kedaluwarsa; simpan yang fresh + in-flight). **328 PASS**.
 - ✅ **DI `app.py` → `PostgresStore`** via `MARAWA_RUNTIME_DSN` (fallback in-memory untuk dev/test); test env-switch dua arah. Diuji 326 PASS (315+11 dengan DSN).
 
+### Resolved hari ini (batch keenam — auth, worker, dashboard, deploy, 16 Aug)
+
+- ✅ **#4 Auth TOTP + sesi**: `scripts/totp_session.py` stdlib murni (RFC 6238 vectors terverifikasi; HMAC-signed session 12 jam; `MARAWA_SESSION_KEY` prod). Route: `/admin/login`, `/admin/enroll-totp`, `/admin/session`; `current_admin` terima Bearer (production) + X-Admin-Id hanya mode dev. 5 tes TOTP + 1 tes login-flow penuh.
+- ✅ **#2 WhatsApp worker**: `apps/whatsapp-worker/` Node + Baileys (pinned `7.0.0-rc14`): normalize murni (skip grup/protocol/non-teks), webhook HMAC, outbox claim→send→update. 7 tes node. **LIVE via systemd**; QR pairing ada di journal.
+- ✅ **#3 Dashboard**: `apps/dashboard/index.html` satu-file (login TOTP → inbox → takeover → balas) diserve `/admin`; route list/detail dual-store compatible.
+- ✅ **#6 Probe OQ-05**: record `data/reports/model-capability-probe.json` = blocked (keputusan provider belum ada; tidak mengarang hasil).
+- ✅ **Deploy**: migrasi `008_runtime_rw_role` (rw store + read data; audit append-only), seed 2 superadmin, env `/etc/marawa/marawa.env` (secrets 0600), `marawa-api.service` (uvicorn :8130) + `marawa-worker.service` LIVE, Caddy `marawa.hatafisme.web.id` → :8130 (DNS belum menunjuk mesin ini — blocker eksternal). Live smoke: login TOTP → token → `/conversations` → 200.
+- ⏭️ **Blocker eksternal deploy**: DNS `marawa.hatafisme.web.id` masih menunjuk `43.159.47.16` (bukan VPS ini); cert ACME ikut gagal. OQ-05 (provider model) masih terbuka — probe blocked tercatat.
+
 ### Resolved hari ini (batch keempat — remediasi bundle 16 Aug)
 
 - ✅ **Migration 006 live**: views honest-naming settled (`category_code/label`, `unit_state`); constraint `aggregation_semantics` + `unknown`, `unit_state` + `review_required`; backfill-then-check order; registry 51 measures `NOT queryable`, 27 dataset `blocked_quality`.

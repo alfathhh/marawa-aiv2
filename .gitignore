@@ -9,3 +9,5 @@ data/raw/
 data/publications/
 data/reports/
 *.log
+apps/whatsapp-worker/node_modules/
+apps/whatsapp-worker/auth/

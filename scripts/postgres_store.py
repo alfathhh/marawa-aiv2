@@ -329,6 +329,24 @@ class PostgresStore:
                 (action, admin_id, conversation_id, Jsonb(detail)),
             )
 
+    # -- TOTP secrets ----------------------------------------------------------
+
+    def totp_secret_for(self, admin_id: str) -> str | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT totp_secret FROM marawa_admins WHERE admin_id=%s AND active",
+                (admin_id,),
+            )
+            row = cur.fetchone()
+            return row["totp_secret"] if row else None
+
+    def set_totp_secret(self, admin_id: str, secret: str) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE marawa_admins SET totp_secret=%s WHERE admin_id=%s",
+                (secret, admin_id),
+            )
+
     # -- retention (365-day policy, 16 Aug 2026 decision; docs/15 note) --------
 
     def apply_retention(self, retention_days: int = 365) -> dict[str, int]:

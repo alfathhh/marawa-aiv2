@@ -56,6 +56,8 @@ for rel in REQUIRED:
 # claims. `docs/` stays the only place status is asserted; see docs/25.
 markdown_files = sorted(
     p for p in ROOT.rglob("*.md") if "reports" not in p.relative_to(ROOT).parts
+    and "node_modules" not in p.relative_to(ROOT).parts
+    and ".venv" not in p.relative_to(ROOT).parts
 )
 report_files = sorted((ROOT / "reports").glob("*.md")) if (ROOT / "reports").is_dir() else []
 link_re = re.compile(r"(?<!!)\[[^\]]*\]\(([^)]+)\)")

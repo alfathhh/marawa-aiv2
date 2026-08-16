@@ -16,13 +16,15 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import sys
 import threading
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import JSONResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from scripts.answer_gate import (
@@ -62,6 +64,11 @@ from scripts.outbox_worker import (
 from scripts.scheduler import plan_sweep
 from scripts.notifications import InMemoryChannel, dispatch_effects
 from scripts.postgres_store import PostgresStore
+from scripts.totp_session import issue_session, new_totp_secret, otpauth_uri, session_key_stable, verify_session, verify_totp
+
+ROOT = Path(__file__).resolve().parents[1]
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 # ---------------------------------------------------------------------------
 # Storage interface — swap this, not the routes, for real Postgres
@@ -90,6 +97,7 @@ class Store:
         self.global_switch = GlobalBotSwitch()
         self.pairing_cutoff_ts: datetime | None = None
         self.audit_log: list[dict[str, Any]] = []
+        self.totp_secrets: dict[str, str] = {}
         self.worker_health = WorkerHealth(connected=True)
         # Swap for a real WhatsApp-sending channel before production; see
         # scripts/notifications.py. Kept in-memory here so the sweep and
@@ -139,6 +147,13 @@ class Store:
         })
 
 
+    def totp_secret_for(self, admin_id: str) -> str | None:
+        return self.totp_secrets.get(admin_id)
+
+    def set_totp_secret(self, admin_id: str, secret: str) -> None:
+        self.totp_secrets[admin_id] = secret
+
+
 def _build_store() -> Store:
     """PostgresStore when MARAWA_RUNTIME_DSN is set; in-memory otherwise.
 
@@ -162,7 +177,14 @@ def get_store() -> Store:
 
 
 # ---------------------------------------------------------------------------
-# Auth (minimal placeholder — real TOTP/session lives in docs/06 §4)
+# App
+# ---------------------------------------------------------------------------
+
+app = FastAPI(title="MARAWA AI — Runtime Wiring")
+
+
+# ---------------------------------------------------------------------------
+# Auth — TOTP + sesi (docs/06 §4); header X-Admin-Id hanya mode dev
 # ---------------------------------------------------------------------------
 
 
@@ -171,20 +193,40 @@ class AdminIdentity(BaseModel):
     role: str
 
 
+def _dev_header_mode() -> bool:
+    """Sesuai docs/06 §4: header placeholder hanya untuk pengembangan.
+
+    MARAWA_SESSION_KEY ada → mode produksi: WAJIB Bearer session.
+    MARAWA_SESSION_KEY tidak ada → mode dev: X-Admin-Id tetap diterima
+    sehingga wiring/dashboard test lama tetap hijau; sesi TOTP juga aktif.
+    """
+    return not session_key_stable()
+
+
 def current_admin(
+    authorization: str | None = Header(default=None, alias="Authorization"),
     x_admin_id: str | None = Header(default=None, alias="X-Admin-Id"),
     store: Store = Depends(get_store),
 ) -> AdminIdentity:
-    # BUG FIX (wiring test): a required Header() makes FastAPI return 422 for a
-    # missing credential, which leaks "this endpoint expects a header named
-    # X-Admin-Id" to an unauthenticated caller. Auth failures — missing OR
-    # invalid — return 401 uniformly.
-    if x_admin_id is None:
-        raise HTTPException(401, "Autentikasi diperlukan")
-    admin = store.admins.get(x_admin_id)
+    # Auth failures — missing OR invalid — return 401 uniformly.
+    if authorization and authorization.startswith("Bearer "):
+        admin_id = verify_session(authorization.removeprefix("Bearer ").strip())
+        if admin_id is None:
+            raise HTTPException(401, "Sesi tidak valid atau kedaluwarsa")
+        return AdminIdentity(admin_id=admin_id, role=_role_of(admin_id, store))
+    if _dev_header_mode() and x_admin_id is not None:
+        admin = store.admins.get(x_admin_id)
+        if admin is None:
+            raise HTTPException(401, "Admin tidak dikenal")
+        return AdminIdentity(admin_id=x_admin_id, role=admin["role"])
+    raise HTTPException(401, "Autentikasi diperlukan")
+
+
+def _role_of(admin_id: str, store: Store) -> str:
+    admin = store.admins.get(admin_id)
     if admin is None:
         raise HTTPException(401, "Admin tidak dikenal")
-    return AdminIdentity(admin_id=x_admin_id, role=admin["role"])
+    return admin["role"]
 
 
 def require_superadmin(admin: AdminIdentity = Depends(current_admin)) -> AdminIdentity:
@@ -193,11 +235,58 @@ def require_superadmin(admin: AdminIdentity = Depends(current_admin)) -> AdminId
     return admin
 
 
+class LoginRequest(BaseModel):
+    admin_id: str
+    totp_code: str
+
+
+@app.post("/admin/login")
+def admin_login(body: LoginRequest, store: Store = Depends(get_store)) -> dict[str, Any]:
+    if not session_key_stable():
+        raise HTTPException(503, "Sesi dinonaktifkan: set MARAWA_SESSION_KEY")
+    admin = store.admins.get(body.admin_id)
+    if admin is None:
+        raise HTTPException(401, "Admin tidak dikenal")
+    secret = store.totp_secret_for(body.admin_id)
+    if secret is None:
+        raise HTTPException(403, "TOTP belum di-enroll untuk admin ini")
+    if not verify_totp(secret, body.totp_code):
+        raise HTTPException(401, "Kode TOTP salah")
+    store.audit("admin_login", body.admin_id, None, {"via": "totp"})
+    return {"token": issue_session(body.admin_id), "admin_id": body.admin_id, "role": admin["role"]}
+
+
+class EnrollRequest(BaseModel):
+    admin_id: str
+
+
+@app.post("/admin/enroll-totp")
+def enroll_totp(
+    body: EnrollRequest,
+    admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    if store.admins.get(body.admin_id) is None:
+        raise HTTPException(404, "Admin tidak dikenal")
+    secret = new_totp_secret()
+    store.set_totp_secret(body.admin_id, secret)
+    store.audit("admin_totp_enroll", admin.admin_id, None, {"for_admin": body.admin_id})
+    return {"otpauth_uri": otpauth_uri(secret, "MARAWA-BPS", body.admin_id)}
+
+
+@app.get("/admin/session")
+def admin_session(admin: AdminIdentity = Depends(current_admin)) -> dict[str, Any]:
+    return {"admin_id": admin.admin_id, "role": admin.role}
+
+
+@app.get("/admin")
+def admin_dashboard() -> FileResponse:
+    """Panel admin satu-file (apps/dashboard/index.html); auth via Bearer di API."""
+    return FileResponse(ROOT / "apps" / "dashboard" / "index.html")
+
 # ---------------------------------------------------------------------------
 # App
 # ---------------------------------------------------------------------------
-
-app = FastAPI(title="MARAWA AI — Runtime Wiring (planning-stage)")
 
 
 @app.exception_handler(Rejected)
@@ -297,11 +386,14 @@ def list_conversations(
     _admin: AdminIdentity = Depends(current_admin),
     store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
-    rows = sorted(store.conversations.values(), key=lambda c: c.last_activity_at or datetime.min, reverse=True)
+    if callable(getattr(store, "list_conversations", None)):
+        rows = store.list_conversations(limit=100)
+    else:
+        rows = sorted(store.conversations.values(), key=lambda c: c.last_activity_at or datetime.min, reverse=True)
     return [
         {
             "conversation_id": c.conversation_id,
-            "state": c.state.value,
+            "state": c.state.value if hasattr(c.state, "value") else str(c.state),
             "state_version": c.state_version,
             "assigned_admin_id": c.assigned_admin_id,
             "bot_paused_by": c.bot_paused_by,
@@ -318,9 +410,13 @@ def get_conversation(
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     conversation = store.get_conversation(conversation_id)
+    messages = (
+        store.messages(conversation_id) if callable(getattr(store, "messages", None))
+        else store.messages.get(conversation_id, [])
+    )
     return {
         "conversation": conversation.__dict__,
-        "messages": store.messages.get(conversation_id, []),
+        "messages": messages,
     }
 
 
@@ -506,6 +602,80 @@ def get_audit_log(
 
 
 # ------------------------------- Sweep (docs/06 §0.9/0.10) -------------------
+
+
+def require_internal_key(
+    x_internal_key: str | None = Header(default=None, alias="X-Internal-Key"),
+) -> None:
+    """Worker↔API channel auth (docs/07). Fail-closed: tanpa MARAWA_INTERNAL_KEY
+    di environment, semua panggilan internal ditolak (503) — bukan dibiarkan
+    terbuka seperti path segment 'internal' yang menyesatkan."""
+    key = os.environ.get("MARAWA_INTERNAL_KEY")
+    if not key:
+        raise HTTPException(503, "Internal channel belum dikonfigurasi")
+    if not x_internal_key or not hmac.compare_digest(key, x_internal_key):
+        raise HTTPException(401, "Internal key tidak valid")
+
+
+@app.post("/internal/outbox/claim")
+def internal_outbox_claim(
+    worker_id: str,
+    limit: int = 10,
+    _key: None = Depends(require_internal_key),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    """Ambil batch outbox untuk dikirim (worker WhatsApp poll tiap N detik)."""
+    claim = getattr(store, "claim_outbox_batch", None)
+    if claim is None:
+        raise HTTPException(501, "Store aktif tidak mendukung claim outbox")
+    records = claim(worker_id, min(max(limit, 1), 50))
+    return {
+        "records": [
+            {
+                "outbox_id": r.outbox_id,
+                "conversation_id": r.conversation_id,
+                "body": r.body,
+                "sender_type": r.sender_type,
+                "sender_admin_id": r.sender_admin_id,
+                "state_version_at_enqueue": r.state_version_at_enqueue,
+                "idempotency_key": r.idempotency_key,
+                "wa_message_id": r.wa_message_id,
+            }
+            for r in records
+        ]
+    }
+
+
+class OutboxUpdateRequest(BaseModel):
+    outbox_id: str
+    status: str  # sent | delivered | failed | cancelled | unknown
+    wa_message_id: str | None = None
+    error: str | None = None
+
+
+@app.post("/internal/outbox/update")
+def internal_outbox_update(
+    body: OutboxUpdateRequest,
+    _key: None = Depends(require_internal_key),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    from scripts.outbox_worker import SendRecord, SendStatus
+
+    record = SendRecord(
+        outbox_id=body.outbox_id,
+        conversation_id="",
+        body="",
+        sender_type="bot",
+        state_version_at_enqueue=0,
+        status=SendStatus(body.status),
+        wa_message_id=body.wa_message_id,
+        last_error=body.error,
+    )
+    update = getattr(store, "update_outbox", None)
+    if update is None:
+        raise HTTPException(501, "Store aktif tidak mendukung update outbox")
+    update(record)
+    return {"outbox_id": body.outbox_id, "status": body.status}
 
 
 @app.post("/internal/sweep")

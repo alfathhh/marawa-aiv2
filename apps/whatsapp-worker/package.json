@@ -1,0 +1,19 @@
+{
+  "name": "marawa-whatsapp-worker",
+  "version": "0.1.0",
+  "private": true,
+  "description": "MARAWA WhatsApp channel adapter (Baileys). No business logic; only channel normalization, pairing, delivery.",
+  "type": "module",
+  "main": "src/worker.js",
+  "scripts": {
+    "start": "node src/worker.js",
+    "test": "node --test test/*.test.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "7.0.0-rc14",
+    "qrcode-terminal": "0.12.0"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

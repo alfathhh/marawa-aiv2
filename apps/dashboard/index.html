@@ -1,0 +1,122 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>MARAWA PST — Panel Admin</title>
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 780px; margin: 0 auto; padding: 16px; background: #fafafa; }
+  .card { background: #fff; border: 1px solid #ddd; border-radius: 10px; padding: 14px; margin: 10px 0; }
+  .badge { display: inline-block; padding: 2px 8px; border-radius: 999px; font-size: 12px; color: #fff; }
+  .badge.BOT_ACTIVE { background: #2e7d32; } .badge.QUEUED { background: #ef6c00; }
+  .badge.ADMIN_ACTIVE { background: #1565c0; } .badge.IDLE_CLOSED { background: #757575; }
+  button { padding: 6px 12px; border-radius: 8px; border: 1px solid #999; background: #fff; cursor: pointer; margin: 2px; }
+  input, textarea { width: 100%; padding: 8px; box-sizing: border-box; margin: 4px 0; }
+  .msg { border-left: 3px solid #ccc; padding: 4px 8px; margin: 4px 0; }
+  .msg.out { border-color: #1565c0; } .msg.in { border-color: #2e7d32; }
+  .error { color: #b71c1c; } .muted { color: #777; font-size: 13px; }
+</style>
+</head>
+<body>
+<h1>MARAWA PST</h1>
+<div id="login" class="card">
+  <h3>Masuk</h3>
+  <input id="admin_id" placeholder="admin_id" autocomplete="username">
+  <input id="totp" placeholder="Kode TOTP (6 angka)" inputmode="numeric" autocomplete="one-time-code">
+  <button onclick="login()">Masuk</button>
+  <div id="login_err" class="error"></div>
+</div>
+
+<div id="main" style="display:none">
+  <div class="card">
+    <strong id="me"></strong> — <button onclick="logout()">Keluar</button>
+  </div>
+  <div id="convos" class="card"></div>
+  <div id="detail" class="card" style="display:none">
+    <h3 id="dt_head"></h3>
+    <div id="dt_actions"></div>
+    <div id="dt_msgs"></div>
+    <textarea id="reply" placeholder="Balas sebagai petugas…"></textarea>
+    <button onclick="sendReply()">Kirim</button>
+  </div>
+</div>
+
+<script>
+const API = '';
+let TOKEN = localStorage.getItem('marawa_token') || '';
+let ACTIVE = null;
+
+function hdr() { return { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN }; }
+async function j(method, url, body) {
+  const r = await fetch(API + url, { method, headers: hdr(), body: body ? JSON.stringify(body) : undefined });
+  if (r.status === 401) { logout(); throw new Error('Sesi berakhir'); }
+  return r.json();
+}
+function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
+function stateBadge(s) { return `<span class="badge ${esc(s)}">${esc(s)}</span>`; }
+
+async function login() {
+  const err = document.getElementById('login_err');
+  err.textContent = '';
+  const r = await fetch(API + '/admin/login', { method: 'POST', headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ admin_id: document.getElementById('admin_id').value.trim(), totp_code: document.getElementById('totp').value.trim() }) });
+  if (!r.ok) { err.textContent = (await r.json()).detail || 'Login gagal'; return; }
+  TOKEN = (await r.json()).token; localStorage.setItem('marawa_token', TOKEN);
+  document.getElementById('totp').value = '';
+  showApp();
+}
+function logout() { localStorage.removeItem('marawa_token'); TOKEN = ''; location.reload(); }
+
+function showApp() {
+  document.getElementById('login').style.display = 'none';
+  document.getElementById('main').style.display = 'block';
+  j('GET', '/admin/session').then((me) => {
+    document.getElementById('me').textContent = me.admin_id + ' (' + me.role + ')';
+  }).catch(() => {});
+  refresh();
+}
+async function refresh() {
+  const convos = await j('GET', '/conversations');
+  const box = document.getElementById('convos');
+  box.innerHTML = '<h3>Percakapan</h3>' + (convos.length === 0 ? '<p class="muted">Belum ada percakapan.</p>' : '');
+  for (const c of convos) {
+    const d = document.createElement('div');
+    d.className = 'card';
+    d.innerHTML = `${esc(c.conversation_id)} ${stateBadge(c.state)} <span class="muted">v${c.state_version} · admin: ${esc(c.assigned_admin_id || '—')}</span>
+      <br><button onclick="openConv('${esc(c.conversation_id)}')">Buka</button>`;
+    box.appendChild(d);
+  }
+}
+async function openConv(id) {
+  ACTIVE = id;
+  const c = await j('GET', '/conversations/' + encodeURIComponent(id));
+  const conv = c.conversation || c;
+  const msgs = c.messages || [];
+  document.getElementById('detail').style.display = 'block';
+  document.getElementById('dt_head').innerHTML = `${esc(conv.conversation_id)} ${stateBadge(conv.state)}`;
+  document.getElementById('dt_actions').innerHTML = `
+    ${conv.state !== 'ADMIN_ACTIVE' ? `<button onclick="act('/conversations/${encodeURIComponent(id)}/handover/on')">Ambil alih</button>` : ''}
+    ${conv.state === 'ADMIN_ACTIVE' ? `<button onclick="act('/conversations/${encodeURIComponent(id)}/handover/off')">Kembalikan ke bot</button>` : ''}`;
+  document.getElementById('dt_msgs').innerHTML = msgs.map((m) =>
+    `<div class="msg ${esc(m.direction)}"><strong>${m.direction === 'out' ? 'Bot/Petugas' : 'Warga'}</strong> ${esc(m.sender_admin_id || '')} <span class="muted">${esc(m.created_at || '')}</span><br>${esc(m.body)}</div>`
+  ).join('') || '<p class="muted">Belum ada pesan.</p>';
+  window._convVersion = conv.state_version;
+}
+async function act(url) {
+  await j('POST', url, { expected_version: window._convVersion });
+  openConv(ACTIVE); refresh();
+}
+async function sendReply() {
+  const body = document.getElementById('reply').value.trim();
+  if (!body || !ACTIVE) return;
+  await j('POST', '/conversations/' + encodeURIComponent(ACTIVE) + '/messages', {
+    body, expected_version: window._convVersion, client_request_id: crypto.randomUUID(),
+  });
+  document.getElementById('reply').value = '';
+  openConv(ACTIVE);
+}
+
+if (TOKEN) showApp(); else document.getElementById('totp').focus();
+</script>
+</body>
+</html>
