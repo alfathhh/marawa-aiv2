@@ -266,6 +266,14 @@ button, [role="button"] { -webkit-tap-highlight-color: transparent; }
 .contact-off { color: var(--muted); font-size: 11px; }
 .contact-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 15px; }
 .contact-add .input { min-height: 38px; }
+.account-list { display: grid; }
+.account-row { min-height: 54px; display: grid; grid-template-columns: 150px minmax(0,1fr) 150px 72px; gap: 13px; align-items: center; padding: 9px 0; border-bottom: 1px solid var(--line); }
+.account-id { font-family: var(--mono); font-size: 11px; }
+.account-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.account-role { color: var(--muted); font-size: 11px; }
+.account-state { color: var(--success); font-size: 11px; font-weight: 650; text-align: right; }
+.account-add { display: grid; grid-template-columns: 1fr 1.25fr 1fr 1.15fr auto; gap: 8px; margin-top: 15px; align-items: end; }
+.account-add .input { min-height: 38px; }
 .readonly-note { padding: 13px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: #f2f3f5; color: var(--muted); font-size: 12px; line-height: 1.55; }
 .readonly-note strong { color: var(--ink-soft); }
 .readonly-note code { font-family: var(--mono); font-size: 11px; }
@@ -319,7 +327,10 @@ button, [role="button"] { -webkit-tap-highlight-color: transparent; }
   .page-workspace { height: calc(100vh - 62px); }
   .page-container { width: calc(100% - 28px); padding: 24px 0 48px; }
   .settings-section { grid-template-columns: 1fr; gap: 14px; padding: 21px 0; }
-  .contact-add { grid-template-columns: 1fr; }
+  .contact-add, .account-add { grid-template-columns: 1fr; }
+  .account-row { grid-template-columns: 1fr auto; gap: 5px 12px; }
+  .account-id, .account-name { grid-column: 1; }
+  .account-role, .account-state { grid-column: 2; }
   .login-screen { grid-template-columns: 1fr; }
   .login-context { min-height: 220px; padding: 28px; }
   .login-copy { margin: 45px 0 0; }
@@ -359,7 +370,7 @@ button, [role="button"] { -webkit-tap-highlight-color: transparent; }
     <div class="login-brand"><span class="brand-mark">M</span><span>MARAWA</span></div>
     <div class="login-copy">
       <div class="kicker">Pelayanan Statistik Terpadu</div>
-      <h1>Percakapan warga, ditangani tanpa terlewat.</h1>
+      <h1>Percakapan user, ditangani tanpa terlewat.</h1>
       <p>Panel operasional petugas BPS Kabupaten Padang Pariaman untuk mengambil alih layanan WhatsApp saat bantuan manusia dibutuhkan.</p>
     </div>
     <div class="login-note">BPS Kabupaten Padang Pariaman · Sistem internal</div>
@@ -434,7 +445,7 @@ button, [role="button"] { -webkit-tap-highlight-color: transparent; }
         <div class="conversation-empty-copy">
           <div class="empty-illustration"><svg class="icon"><use href="#i-chat"/></svg></div>
           <h2>Pilih percakapan</h2>
-          <p>Buka percakapan dari kotak masuk untuk membaca konteks, mengambil alih, dan membalas warga.</p>
+          <p>Buka percakapan dari kotak masuk untuk membaca konteks, mengambil alih, dan membalas user.</p>
         </div>
       </div>
       <div class="conversation-view hidden" id="conversation_view">
@@ -578,10 +589,10 @@ function renderThread(conv, messages) {
   $('messages').innerHTML = messages.length ? messages.map((m) => {
     const outbound = m.direction === 'out';
     const byBot = m.sender_type === 'bot';
-    const who = m.sender_type === 'admin' ? (m.sender_admin_id || 'Petugas') : byBot ? 'Bot MARAWA' : 'Warga';
+    const who = m.sender_type === 'admin' ? (m.sender_admin_id || 'Petugas') : byBot ? 'Bot MARAWA' : 'User';
     return '<article class="message ' + (outbound ? 'out' : 'in') + (byBot ? ' by-bot' : '') + '"><div class="message-meta"><span>' + esc(who) + '</span><span>·</span><time>' + esc(formatClock(m.created_at)) + '</time></div><div class="message-bubble">' + esc(m.body || '') + '</div></article>';
   }).join('') : '<div class="empty-state"><strong>Belum ada pesan</strong>Riwayat pesan akan tampil di sini.</div>';
-  const placeholder = canReply ? 'Tulis balasan untuk warga…' : held ? 'Percakapan sedang dipegang petugas lain' : 'Ambil alih untuk mulai membalas';
+  const placeholder = canReply ? 'Tulis balasan untuk user…' : held ? 'Percakapan sedang dipegang petugas lain' : 'Ambil alih untuk mulai membalas';
   const hint = canReply ? 'Bot tetap diam sampai percakapan dikembalikan.' : held ? 'Hanya petugas pemegang yang dapat membalas.' : 'Mengambil alih akan menghentikan balasan otomatis bot.';
   $('composer_wrap').innerHTML = '<div class="composer"><label class="sr-only" for="reply">Balasan</label><textarea id="reply" rows="1" placeholder="' + esc(placeholder) + '"' + (canReply ? '' : ' disabled') + '></textarea><button class="send-btn" id="send_btn" aria-label="Kirim balasan"' + (canReply ? '' : ' disabled') + '>' + icon('send') + '</button></div><div class="composer-hint">' + esc(hint) + '</div>';
   $('conversation_empty').classList.add('hidden');
@@ -680,8 +691,8 @@ function showTab(name) {
 }
 
 const SETTING_META = {
-  citizen_idle_minutes: ['Sesi warga berakhir setelah', 2, 30, 'Menit tanpa pesan sebelum sesi bot ditutup.'],
-  queue_expiry_minutes: ['Antrean kedaluwarsa setelah', 30, 1440, 'Batas waktu warga menunggu petugas.'],
+  citizen_idle_minutes: ['Sesi user berakhir setelah', 2, 30, 'Menit tanpa pesan sebelum sesi bot ditutup.'],
+  queue_expiry_minutes: ['Antrean kedaluwarsa setelah', 30, 1440, 'Batas waktu user menunggu petugas.'],
   handover_auto_revert_minutes: ['Bot kembali otomatis setelah', 5, 480, 'Mencegah percakapan tertahan saat petugas lupa melepas.'],
   queue_notify_repeat_minutes: ['Ulangi notifikasi setiap', 1, 30, 'Jeda minimum notifikasi untuk percakapan yang sama.'],
 };
@@ -697,11 +708,12 @@ async function loadSettings() {
     }).join('');
     view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Setelan</h1><p>Konfigurasi kanal, layanan, dan petugas.</p></div>' +
       '<section class="settings-section"><div class="section-label"><h2>WhatsApp</h2><p>Status koneksi dan pairing akun layanan.</p></div><div class="section-body"><div class="status-row"><span class="connection-dot" id="wa_dot"></span><div class="status-copy"><strong id="wa_status_title">Memeriksa koneksi…</strong><span id="wa_status_detail">Mohon tunggu</span></div><button class="btn compact" id="wa_refresh">' + icon('refresh') + 'Muat ulang</button></div><div class="qr-box hidden" id="qr_box"><img id="wa_qr" alt="QR pairing WhatsApp"></div></div></section>' +
-      '<section class="settings-section"><div class="section-label"><h2>Bot layanan</h2><p>Kontrol global untuk semua balasan otomatis.</p></div><div class="section-body"><div class="bot-switch"><span class="connection-dot ' + (BOT_ENABLED ? 'ok' : 'bad') + '"></span><div class="status-copy"><strong>' + (BOT_ENABLED ? 'Bot aktif' : 'Bot dimatikan') + '</strong><span>' + (BOT_ENABLED ? 'Layanan otomatis berjalan normal.' : 'Tidak ada balasan otomatis ke warga.') + '</span></div><button class="btn compact ' + (BOT_ENABLED ? 'danger-quiet' : 'accent') + '" id="bot_switch" data-enabled="' + (BOT_ENABLED ? 'false' : 'true') + '">' + (BOT_ENABLED ? 'Matikan bot' : 'Aktifkan bot') + '</button></div></div></section>' +
+      '<section class="settings-section"><div class="section-label"><h2>Bot layanan</h2><p>Kontrol global untuk semua balasan otomatis.</p></div><div class="section-body"><div class="bot-switch"><span class="connection-dot ' + (BOT_ENABLED ? 'ok' : 'bad') + '"></span><div class="status-copy"><strong>' + (BOT_ENABLED ? 'Bot aktif' : 'Bot dimatikan') + '</strong><span>' + (BOT_ENABLED ? 'Layanan otomatis berjalan normal.' : 'Tidak ada balasan otomatis ke user.') + '</span></div><button class="btn compact ' + (BOT_ENABLED ? 'danger-quiet' : 'accent') + '" id="bot_switch" data-enabled="' + (BOT_ENABLED ? 'false' : 'true') + '">' + (BOT_ENABLED ? 'Matikan bot' : 'Aktifkan bot') + '</button></div></div></section>' +
       '<section class="settings-section"><div class="section-label"><h2>Waktu layanan</h2><p>Atur batas sesi, antrean, dan notifikasi.</p></div><div class="section-body">' + settingsRows + '<div class="settings-actions"><button class="btn primary" id="save_settings">Simpan perubahan</button><span id="settings_hint" class="queue-summary"></span></div></div></section>' +
-      '<section class="settings-section"><div class="section-label"><h2>Nomor petugas</h2><p>Penerima notifikasi saat warga masuk antrean.</p></div><div class="section-body"><div class="contact-list" id="contacts_list"><div class="skeleton" style="height:48px"></div></div><div class="contact-add"><input class="input" id="contact_phone" placeholder="08123456789" inputmode="tel"><input class="input" id="contact_label" placeholder="Nama petugas"><button class="btn" id="add_contact">Tambah</button></div></div></section>' +
+      '<section class="settings-section"><div class="section-label"><h2>Nomor petugas</h2><p>Penerima notifikasi saat user masuk antrean.</p></div><div class="section-body"><div class="contact-list" id="contacts_list"><div class="skeleton" style="height:48px"></div></div><div class="contact-add"><input class="input" id="contact_phone" placeholder="08123456789" inputmode="tel"><input class="input" id="contact_label" placeholder="Nama petugas"><button class="btn" id="add_contact">Tambah</button></div></div></section>' +
+      '<section class="settings-section"><div class="section-label"><h2>Akun petugas</h2><p>Tambah akses dashboard untuk superadmin atau petugas pelayanan.</p></div><div class="section-body"><div class="account-list" id="accounts_list"><div class="skeleton" style="height:54px"></div></div><form class="account-add" id="account_form"><input class="input" id="account_id" autocomplete="off" placeholder="username" minlength="3" maxlength="40" pattern="[a-z0-9][a-z0-9._-]{2,39}" required><input class="input" id="account_name" autocomplete="name" placeholder="Nama tampilan" minlength="2" maxlength="80" required><select class="input" id="account_role" required><option value="admin">Petugas pelayanan</option><option value="superadmin">Superadmin</option></select><input class="input" id="account_password" type="password" autocomplete="new-password" placeholder="Password minimal 8 karakter" minlength="8" maxlength="128" required><button class="btn primary" type="submit">Tambah akun</button></form></div></section>' +
       '<section class="settings-section"><div class="section-label"><h2>Guard agent</h2><p>Kebijakan kebenaran yang tidak bisa diubah dari UI.</p></div><div class="section-body"><div class="readonly-note"><strong>Terkunci di kode.</strong> ' + esc(agent.note || '') + '<br><br>' + (agent.never_editable || []).map((item) => '<code>' + esc(item) + '</code>').join(' · ') + '</div></div></section></div>';
-    await Promise.all([loadWhatsApp(), loadContacts()]);
+    await Promise.all([loadWhatsApp(), loadContacts(), loadAccounts()]);
   } catch (error) { view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Setelan</h1></div><div class="error-box">' + esc(error.message) + '</div></div>'; }
 }
 
@@ -732,6 +744,34 @@ async function addContact() {
   catch (error) { toast(error.message); }
 }
 async function removeContact(id) { try { await api('DELETE','/settings/admin-contacts/' + encodeURIComponent(id)); toast('Nomor petugas dihapus'); await loadContacts(); } catch (error) { toast(error.message); } }
+
+async function loadAccounts() {
+  const box = $('accounts_list'); if (!box) return;
+  try {
+    const rows = await api('GET','/admin/accounts');
+    box.innerHTML = rows.length ? rows.map((account) => {
+      const role = account.role === 'superadmin' ? 'Superadmin' : 'Petugas pelayanan';
+      return '<div class="account-row"><span class="account-id">' + esc(account.admin_id) + '</span><span class="account-name">' + esc(account.name) + '</span><span class="account-role">' + esc(role) + '</span><span class="account-state">' + (account.active ? 'Aktif' : 'Nonaktif') + '</span></div>';
+    }).join('') : '<div class="empty-state"><strong>Belum ada akun</strong>Tambahkan akun petugas pelayanan atau superadmin.</div>';
+  } catch (error) { box.innerHTML = '<div class="error-box">' + esc(error.message) + '</div>'; }
+}
+
+async function addAccount(form) {
+  if (!form.reportValidity()) return;
+  const button = form.querySelector('button[type="submit"]');
+  button.disabled = true; button.textContent = 'Menambahkan…';
+  try {
+    await api('POST','/admin/accounts',{
+      admin_id: $('account_id').value.trim().toLowerCase(),
+      name: $('account_name').value.trim(),
+      role: $('account_role').value,
+      password: $('account_password').value,
+    });
+    form.reset(); toast('Akun berhasil ditambahkan'); await loadAccounts();
+  } catch (error) { toast(error.message); }
+  finally { button.disabled = false; button.textContent = 'Tambah akun'; }
+}
+
 async function saveSettings() {
   const values = {}; let invalid = null;
   document.querySelectorAll('#settings_view [data-key]').forEach((input) => { const n = Number(input.value); if (!Number.isInteger(n) || n < Number(input.min) || n > Number(input.max)) invalid = input; values[input.dataset.key] = n; });
@@ -784,6 +824,9 @@ document.addEventListener('click', (event) => {
   if (event.target.closest('#add_contact')) { addContact(); return; }
   const del = event.target.closest('[data-delete-contact]'); if (del) { removeContact(del.dataset.deleteContact); return; }
   const botSwitch = event.target.closest('#bot_switch'); if (botSwitch) { toggleBot(botSwitch.dataset.enabled === 'true'); }
+});
+document.addEventListener('submit', (event) => {
+  if (event.target.id === 'account_form') { event.preventDefault(); addAccount(event.target); }
 });
 $('queue_search').addEventListener('input', (event) => { SEARCH_QUERY = event.target.value.trim(); $('search_clear').classList.toggle('hidden', !SEARCH_QUERY); renderQueue(); });
 document.addEventListener('keydown', (event) => {

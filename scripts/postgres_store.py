@@ -500,6 +500,27 @@ class PostgresStore:
             )
             return cur.rowcount == 1
 
+    def list_admin_accounts(self) -> list[dict[str, Any]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT admin_id,name,role,active,created_at "
+                "FROM marawa_admins ORDER BY active DESC,name,admin_id"
+            )
+            return cur.fetchall()
+
+    def create_admin_account(
+        self, admin_id: str, name: str, role: str, password_hash: str,
+    ) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO marawa_admins "
+                "(admin_id,name,role,password_hash,active) "
+                "VALUES (%s,%s,%s,%s,true) "
+                "ON CONFLICT (admin_id) DO NOTHING",
+                (admin_id, name, role, password_hash),
+            )
+            return cur.rowcount == 1
+
     def set_setting(self, key: str, value: Any) -> None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(

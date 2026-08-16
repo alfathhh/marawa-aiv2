@@ -71,3 +71,13 @@ def test_whatsapp_worker_calls_final_gate_before_send() -> None:
     send = js.index("sock.sendMessage")
     assert gate < send
     assert "if (!gate.allowed) continue" in js
+
+
+def test_dashboard_uses_user_wording_and_has_account_management() -> None:
+    html = source()
+    assert "warga" not in html.lower()
+    assert "/admin/accounts" in html
+    assert 'value="admin"' in html
+    assert 'value="superadmin"' in html
+    assert 'id="account_form"' in html
+    assert 'id="accounts_list"' in html

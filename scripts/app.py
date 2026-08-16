@@ -16,6 +16,7 @@ from __future__ import annotations
 import hashlib
 import hmac
 import os
+import re
 import sys
 import threading
 import uuid
@@ -287,6 +288,32 @@ class Store:
 
     def set_totp_secret(self, admin_id: str, secret: str) -> None:
         self.totp_secrets[admin_id] = secret
+
+    def set_admin_password(self, admin_id: str, password_hash: str) -> bool:
+        admin = self.admins.get(admin_id)
+        if admin is None:
+            return False
+        admin["password_hash"] = password_hash
+        return True
+
+    def list_admin_accounts(self) -> list[dict[str, Any]]:
+        return [
+            {
+                "admin_id": admin_id, "name": row["name"],
+                "role": row["role"], "active": True,
+            }
+            for admin_id, row in sorted(self.admins.items())
+        ]
+
+    def create_admin_account(
+        self, admin_id: str, name: str, role: str, password_hash: str,
+    ) -> bool:
+        if admin_id in self.admins:
+            return False
+        self.admins[admin_id] = {
+            "name": name, "role": role, "password_hash": password_hash,
+        }
+        return True
 
     def set_setting(self, key: str, value: Any) -> None:
         self.runtime_settings[key] = value
@@ -914,6 +941,74 @@ def remove_admin_contact(
         raise HTTPException(404, "Nomor tidak ditemukan")
     store.audit("admin_contact_removed", admin.admin_id, None, {"contact_id": contact_id})
     return {"removed": contact_id}
+
+
+class AdminAccountIn(BaseModel):
+    admin_id: str
+    name: str
+    role: str
+    password: str
+
+
+_ACCOUNT_ID_RE = re.compile(r"^[a-z0-9][a-z0-9._-]{2,39}$")
+
+
+def _validate_admin_account(body: AdminAccountIn) -> tuple[str, str]:
+    admin_id = body.admin_id.strip().lower()
+    name = body.name.strip()
+    if not _ACCOUNT_ID_RE.fullmatch(admin_id):
+        raise HTTPException(
+            422,
+            "Username 3–40 karakter: huruf kecil, angka, titik, strip, atau underscore",
+        )
+    if not (2 <= len(name) <= 80):
+        raise HTTPException(422, "Nama tampilan harus 2–80 karakter")
+    if body.role not in ("admin", "superadmin"):
+        raise HTTPException(422, "Role harus admin atau superadmin")
+    if not (8 <= len(body.password) <= 128):
+        raise HTTPException(422, "Password harus 8–128 karakter")
+    return admin_id, name
+
+
+@app.get("/admin/accounts")
+def list_admin_accounts(
+    _admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> list[dict[str, Any]]:
+    getter = getattr(store, "list_admin_accounts", None)
+    if getter is None:
+        raise HTTPException(501, "Penyimpanan ini belum mendukung akun admin")
+    return [
+        {
+            "admin_id": row["admin_id"], "name": row["name"],
+            "role": row["role"], "active": bool(row.get("active", True)),
+            "created_at": (
+                row["created_at"].isoformat()
+                if row.get("created_at") and hasattr(row["created_at"], "isoformat")
+                else row.get("created_at")
+            ),
+        }
+        for row in getter()
+    ]
+
+
+@app.post("/admin/accounts", status_code=201)
+def create_admin_account(
+    body: AdminAccountIn,
+    admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    admin_id, name = _validate_admin_account(body)
+    creator = getattr(store, "create_admin_account", None)
+    if creator is None:
+        raise HTTPException(501, "Penyimpanan ini belum mendukung akun admin")
+    if not creator(admin_id, name, body.role, hash_password(body.password)):
+        raise HTTPException(409, "Username sudah digunakan")
+    store.audit(
+        "admin_account_created", admin.admin_id, None,
+        {"target_admin_id": admin_id, "name": name, "role": body.role},
+    )
+    return {"admin_id": admin_id, "name": name, "role": body.role, "active": True}
 
 
 class PasswordSetIn(BaseModel):

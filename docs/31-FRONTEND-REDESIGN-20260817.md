@@ -95,5 +95,20 @@ UI thread Playwright: open, handover, reply bubble, release PASS
 Console/page errors: 0
 ```
 
+## Account management update — 2026-08-17
+
+- Semua copy frontend memakai istilah **user**, bukan warga.
+- Superadmin-only API:
+  - `GET /admin/accounts` — daftar akun sanitized;
+  - `POST /admin/accounts` — tambah `admin` atau `superadmin`.
+- Validasi server: username lowercase allowlist 3–40 karakter, nama 2–80,
+  role enum, password 8–128; duplicate username = 409.
+- Password langsung di-hash PBKDF2; hash tidak pernah keluar dari list/response
+  atau audit detail.
+- Dashboard Setelan menampilkan katalog role, form tambah akun, dan daftar akun
+  aktif. Admin biasa tetap tidak melihat Setelan/Audit dan API menolak 403.
+- Bukti: create/list/login/RBAC lewat Playwright + HTTP→Postgres E2E; suite
+  **420 Python + 9 Node PASS**.
+
 Screenshots from the visual audit are in `/tmp/marawa-visual-audit/` during the
 session; they are not runtime assets.

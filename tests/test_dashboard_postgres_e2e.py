@@ -268,3 +268,42 @@ def test_sweep_endpoint_uses_postgres_store(db_client):
     assert swept.status_code == 200, swept.text
     assert any(item["conversation_id"] == cid for item in swept.json()["applied"])
     assert store.get_conversation(cid).state.value == "IDLE_CLOSED"
+
+
+def test_superadmin_creates_login_capable_admin_in_postgres(db_client, monkeypatch):
+    client, _store = db_client
+    import psycopg
+    admin_id = f"petugas-{uuid.uuid4().hex[:10]}"
+    password = "layanan-aman-2026"
+    try:
+        created = client.post(
+            "/admin/accounts", headers=headers(),
+            json={
+                "admin_id": admin_id, "name": "Petugas Pelayanan E2E",
+                "role": "admin", "password": password,
+            },
+        )
+        assert created.status_code == 201, created.text
+        listed = client.get("/admin/accounts", headers=headers())
+        row = next(item for item in listed.json() if item["admin_id"] == admin_id)
+        assert row["name"] == "Petugas Pelayanan E2E"
+        assert "password_hash" not in row
+
+        # Switch from dev header auth to the same signed-session gate production
+        # uses, then prove the freshly stored hash is login-capable.
+        monkeypatch.setenv("MARAWA_SESSION_KEY", "e2e-session-key-that-is-long-enough")
+        login = client.post(
+            "/admin/login",
+            json={"admin_id": admin_id, "password": password, "totp_code": None},
+        )
+        assert login.status_code == 200, login.text
+        assert login.json()["role"] == "admin"
+        forbidden = client.get(
+            "/admin/accounts",
+            headers={"Authorization": f"Bearer {login.json()['token']}"},
+        )
+        assert forbidden.status_code == 403
+    finally:
+        with psycopg.connect(DSN) as conn, conn.cursor() as cur:
+            cur.execute("DELETE FROM marawa_audit_log WHERE admin_id=%s OR detail->>'target_admin_id'=%s", (admin_id, admin_id))
+            cur.execute("DELETE FROM marawa_admins WHERE admin_id=%s", (admin_id,))
