@@ -49,6 +49,18 @@ async function claimAndSend(sock) {
     return; // API offline; next tick
   }
   for (const record of payload.records || []) {
+    // Authorization is control-plane I/O. If it is temporarily unavailable,
+    // leave the row claimed so the lease can expire and retry; never turn an
+    // API outage into a permanent delivery failure.
+    let gate;
+    try {
+      gate = await apiPost('/internal/outbox/authorize', {
+        outbox_id: record.outbox_id,
+      });
+    } catch (err) {
+      continue;
+    }
+    if (!gate.allowed) continue;
     try {
       const jid = record.conversation_id.endsWith('@s.whatsapp.net')
         ? record.conversation_id

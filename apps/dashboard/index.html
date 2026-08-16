@@ -1,834 +1,806 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="id">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>MARAWA · Panel Petugas PST</title>
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="color-scheme" content="light">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'%3E%3Crect width='32' height='32' rx='8' fill='%2318191b'/%3E%3Cpath d='M8 23V9h4l4 7 4-7h4v14h-4v-8l-4 7-4-7v8z' fill='white'/%3E%3C/svg%3E">
+<title>MARAWA — Panel Petugas</title>
 <style>
-/* ─────────────────────────────────────────────────────────────
-   MARAWA — panel petugas PST, BPS Kabupaten Padang Pariaman
-
-   Tugas tunggal halaman ini: memberi tahu siapa yang sedang
-   menunggu manusia, dan berapa lama. Semua keputusan visual
-   turun dari sana.
-
-   Warna hanya dipakai untuk MENGKODE STATE. Sisanya netral,
-   supaya satu-satunya hal berwarna panas di layar adalah orang
-   yang sedang menunggu.
-   ───────────────────────────────────────────────────────────── */
 :root {
-  --paper:    #EEF1F4;
-  --surface:  #FFFFFF;
-  --ink:      #0F1419;
-  --muted:    #5B6572;
-  --rule:     #D5DBE2;
-
-  --waiting:  #B23C10;
-  --waiting-wash: #FDF0EA;
-  --human:    #1B4ACC;
-  --human-wash:   #EDF1FE;
-  --bot:      #05704F;
-  --closed:   #8A96A4;
-
-  --sans: 'IBM Plex Sans', -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
-  --mono: 'IBM Plex Mono', ui-monospace, 'SF Mono', Menlo, monospace;
-  --cond: 'Barlow Condensed', 'Arial Narrow', var(--sans);
-
-  --r: 6px;
-  --shadow: 0 1px 2px rgba(15,20,25,.06), 0 4px 12px rgba(15,20,25,.04);
+  --canvas: #f6f7f9;
+  --surface: #ffffff;
+  --surface-muted: #fafafa;
+  --ink: #18191b;
+  --ink-soft: #3f4247;
+  --muted: #777b82;
+  --faint: #a2a6ad;
+  --line: #e5e7eb;
+  --line-strong: #d6d9de;
+  --accent: #2563eb;
+  --accent-hover: #1d4ed8;
+  --accent-soft: #eff6ff;
+  --waiting: #b45309;
+  --waiting-soft: #fffbeb;
+  --success: #15803d;
+  --success-soft: #f0fdf4;
+  --danger: #b42318;
+  --danger-soft: #fff4f2;
+  --closed: #8b9098;
+  --rail: 216px;
+  --queue: 370px;
+  --radius-sm: 7px;
+  --radius: 10px;
+  --radius-lg: 14px;
+  --shadow-pop: 0 12px 36px rgba(15, 23, 42, .12), 0 2px 8px rgba(15, 23, 42, .06);
+  --font: -apple-system, BlinkMacSystemFont, "Segoe UI", "Carlito", Roboto, Helvetica, Arial, sans-serif;
+  --mono: ui-monospace, "SFMono-Regular", "Cascadia Code", "DejaVu Sans Mono", Consolas, monospace;
 }
-
 * { box-sizing: border-box; }
-html, body { height: 100%; }
+html, body { width: 100%; min-height: 100%; }
 body {
-  margin: 0; background: var(--paper); color: var(--ink);
-  font-family: var(--sans); font-size: 15px; line-height: 1.5;
-  -webkit-font-smoothing: antialiased;
+  margin: 0; color: var(--ink); background: var(--canvas); font-family: var(--font);
+  font-size: 14px; line-height: 1.45; -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
 }
-button, input, textarea { font: inherit; color: inherit; }
-:focus-visible { outline: 2px solid var(--human); outline-offset: 2px; border-radius: 3px; }
-
-/* Eyebrow: label struktural yang membawa informasi nyata (jumlah),
-   bukan hiasan. */
-.eyebrow {
-  font-family: var(--cond); font-weight: 600; font-size: 13px;
-  letter-spacing: .1em; text-transform: uppercase; color: var(--muted);
-  display: flex; align-items: baseline; gap: 8px; margin: 0 0 10px;
-}
-.eyebrow .count {
-  font-family: var(--mono); font-size: 12px; font-weight: 500;
-  background: var(--ink); color: #fff; padding: 1px 7px; border-radius: 999px;
-  letter-spacing: 0;
-}
-.eyebrow.is-waiting { color: var(--waiting); }
-.eyebrow.is-waiting .count { background: var(--waiting); }
-.eyebrow hr { flex: 1; border: 0; border-top: 1px solid var(--rule); }
-
-.topbar {
-  display: flex; align-items: center; gap: 16px;
-  padding: 0 20px; height: 56px; background: var(--surface);
-  border-bottom: 1px solid var(--rule); position: sticky; top: 0; z-index: 40;
-}
-.brand { font-family: var(--cond); font-weight: 700; font-size: 21px; letter-spacing: .04em; }
-.brand span { color: var(--muted); font-weight: 500; margin-left: 8px; font-size: 15px; letter-spacing: .06em; }
-.spacer { flex: 1; }
-.conn { display: inline-flex; align-items: center; gap: 7px; font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--closed); flex: none; }
-.dot.ok { background: var(--bot); }
-.dot.bad { background: var(--waiting); }
-.who { font-size: 13px; color: var(--muted); }
-.who b { color: var(--ink); font-weight: 600; }
-
-.shell { display: grid; grid-template-columns: minmax(320px, 400px) 1fr; height: calc(100% - 56px); }
-.queue { overflow-y: auto; padding: 20px; border-right: 1px solid var(--rule); }
-.thread { overflow-y: auto; padding: 24px 28px; background: var(--surface); }
-.group + .group { margin-top: 26px; }
-
-/* SIGNATURE — kartu menunggu.
-   Satu-satunya elemen besar dan panas di layar. Pita kiri MENEBAL
-   seiring lama menunggu, jadi urgensi terbaca dari seberang meja
-   tanpa perlu membaca angkanya. Ketebalan dipakai, bukan hanya
-   warna, supaya tetap terbaca bagi yang sulit membedakan warna. */
-.wait-card {
-  position: relative; background: var(--surface); border: 1px solid var(--rule);
-  border-left: 5px solid var(--waiting); border-radius: var(--r);
-  padding: 14px 16px 14px 18px; margin-bottom: 10px; cursor: pointer;
-  box-shadow: var(--shadow); text-align: left; width: 100%; display: block;
-  transition: transform .12s ease, box-shadow .12s ease;
-}
-.wait-card:hover { transform: translateY(-1px); box-shadow: 0 2px 4px rgba(15,20,25,.08), 0 8px 20px rgba(15,20,25,.07); }
-.wait-card[data-urgency="2"] { border-left-width: 8px; background: var(--waiting-wash); }
-.wait-card[data-urgency="3"] { border-left-width: 12px; background: var(--waiting-wash); }
-.wait-card[data-urgency="3"]::after {
-  content: ''; position: absolute; inset: -1px -1px -1px -12px;
-  border-radius: var(--r); border: 1px solid var(--waiting); opacity: .3;
-  animation: breathe 2.6s ease-in-out infinite; pointer-events: none;
-}
-@keyframes breathe { 0%,100% { opacity: .12; } 50% { opacity: .5; } }
-
-.wait-top { display: flex; align-items: baseline; justify-content: space-between; gap: 12px; }
-.contact { font-family: var(--mono); font-size: 13px; font-weight: 500; }
-.timer {
-  font-family: var(--mono); font-variant-numeric: tabular-nums;
-  font-size: 26px; font-weight: 600; line-height: 1; color: var(--waiting); letter-spacing: -.02em;
-}
-.timer small { font-size: 11px; font-weight: 500; letter-spacing: .08em; opacity: .7; margin-left: 3px; }
-.preview {
-  margin-top: 8px; color: var(--muted); font-size: 14px;
-  display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden;
-}
-
-.row {
-  display: flex; align-items: center; gap: 10px; width: 100%; text-align: left;
-  padding: 9px 12px; background: none; border: 0; border-radius: var(--r); cursor: pointer; color: inherit;
-}
-.row:hover { background: rgba(15,20,25,.045); }
-.row.active { background: var(--human-wash); box-shadow: inset 0 0 0 1px rgba(27,74,204,.25); }
-.row .tick { width: 3px; align-self: stretch; border-radius: 2px; background: var(--closed); flex: none; }
-.row.s-ADMIN_ACTIVE .tick { background: var(--human); }
-.row.s-BOT_ACTIVE   .tick { background: var(--bot); }
-.row .id { font-family: var(--mono); font-size: 12.5px; flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.row .by { font-size: 12px; color: var(--muted); }
-
-.empty {
-  border: 1px dashed var(--rule); border-radius: var(--r);
-  padding: 18px; color: var(--muted); font-size: 14px; background: rgba(255,255,255,.5);
-}
-.empty b { color: var(--ink); font-weight: 600; }
-
-.thread-head { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; padding-bottom: 14px; border-bottom: 1px solid var(--rule); }
-.thread-head h2 { font-family: var(--mono); font-size: 16px; font-weight: 600; margin: 0; }
-.pill {
-  font-family: var(--cond); font-size: 12px; font-weight: 600; letter-spacing: .09em;
-  text-transform: uppercase; padding: 3px 9px; border-radius: 999px; color: #fff;
-}
-.pill.BOT_ACTIVE { background: var(--bot); }
-.pill.QUEUED { background: var(--waiting); }
-.pill.ADMIN_ACTIVE { background: var(--human); }
-.pill.IDLE_CLOSED { background: var(--closed); }
-
-.btn {
-  padding: 8px 15px; border-radius: var(--r); border: 1px solid var(--ink);
-  background: var(--ink); color: #fff; cursor: pointer; font-size: 14px; font-weight: 500;
-}
-.btn:hover { opacity: .88; }
-.btn.ghost { background: none; color: var(--ink); border-color: var(--rule); }
-.btn.ghost:hover { border-color: var(--ink); opacity: 1; }
-.btn.take { background: var(--waiting); border-color: var(--waiting); }
-.btn:disabled { opacity: .45; cursor: not-allowed; }
-
-.msgs { padding: 20px 0; display: flex; flex-direction: column; gap: 12px; }
-.bubble { max-width: 74%; padding: 10px 13px; border-radius: 12px; font-size: 14.5px; }
-.bubble .meta {
-  font-family: var(--mono); font-size: 10.5px; letter-spacing: .04em;
-  text-transform: uppercase; opacity: .65; margin-bottom: 4px;
-}
-.bubble.in  { align-self: flex-start; background: var(--paper); border-bottom-left-radius: 3px; }
-.bubble.out { align-self: flex-end; background: var(--human); color: #fff; border-bottom-right-radius: 3px; }
-.bubble.out.by-bot { background: var(--bot); }
-.body-text { white-space: pre-wrap; word-break: break-word; }
-
-.composer { border-top: 1px solid var(--rule); padding-top: 14px; }
-.composer textarea {
-  width: 100%; min-height: 84px; resize: vertical; padding: 11px 13px;
-  border: 1px solid var(--rule); border-radius: var(--r); background: var(--surface);
-}
-.composer textarea:disabled { background: var(--paper); }
-.composer-foot { display: flex; align-items: center; gap: 12px; margin-top: 10px; }
-.hint { font-size: 13px; color: var(--muted); flex: 1; }
-
-.login-wrap { display: grid; place-items: center; min-height: calc(100% - 56px); padding: 24px; }
-.login {
-  width: 100%; max-width: 380px; background: var(--surface); border: 1px solid var(--rule);
-  border-radius: 10px; padding: 30px 28px; box-shadow: var(--shadow);
-}
-.login h1 { font-family: var(--cond); font-size: 27px; margin: 0 0 4px; letter-spacing: .02em; }
-.login p { margin: 0 0 22px; color: var(--muted); font-size: 14px; }
-.field { margin-bottom: 14px; }
-.field label {
-  display: block; font-family: var(--cond); font-size: 12px; font-weight: 600;
-  letter-spacing: .1em; text-transform: uppercase; color: var(--muted); margin-bottom: 5px;
-}
-.field input { width: 100%; padding: 10px 12px; border: 1px solid var(--rule); border-radius: var(--r); background: var(--surface); }
-.field input#totp { font-family: var(--mono); font-size: 19px; letter-spacing: .3em; text-align: center; }
-.alert {
-  margin-top: 14px; padding: 10px 12px; border-radius: var(--r); font-size: 13.5px;
-  background: var(--waiting-wash); color: var(--waiting); border: 1px solid rgba(178,60,16,.25);
-}
-
-#toast {
-  position: fixed; left: 50%; bottom: 26px; transform: translate(-50%, 14px);
-  background: var(--ink); color: #fff; padding: 10px 18px; border-radius: 999px;
-  font-size: 14px; opacity: 0; pointer-events: none; transition: opacity .18s, transform .18s; z-index: 60;
-}
-#toast.show { opacity: 1; transform: translate(-50%, 0); }
-
-.tabs { display: flex; gap: 2px; }
-.tab {
-  font-family: var(--cond); font-size: 14px; font-weight: 600; letter-spacing: .06em;
-  text-transform: uppercase; padding: 6px 13px; border: 0; background: none;
-  color: var(--muted); cursor: pointer; border-radius: var(--r);
-}
-.tab:hover { background: rgba(15,20,25,.05); color: var(--ink); }
-.tab.is-on { background: var(--ink); color: #fff; }
-
-.page { padding: 26px 28px; max-width: 900px; margin: 0 auto; overflow-y: auto; height: calc(100% - 56px); }
-.page h2 { font-family: var(--cond); font-size: 24px; margin: 0 0 4px; letter-spacing: .02em; }
-.page .lede { color: var(--muted); margin: 0 0 22px; font-size: 14px; }
-
-.panel { background: var(--surface); border: 1px solid var(--rule); border-radius: 8px; padding: 20px 22px; margin-bottom: 18px; }
-.setting { display: grid; grid-template-columns: 1fr 120px; gap: 12px 16px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--rule); }
-.setting:last-of-type { border-bottom: 0; }
-.setting .name { font-weight: 500; }
-.setting .note { grid-column: 1 / -1; margin-top: -6px; color: var(--muted); font-size: 13px; }
-.setting input {
-  font-family: var(--mono); text-align: right; padding: 7px 10px;
-  border: 1px solid var(--rule); border-radius: var(--r); width: 100%;
-}
-.setting input:invalid { border-color: var(--waiting); background: var(--waiting-wash); }
-
-.locked { background: var(--paper); border-left: 3px solid var(--closed); padding: 12px 14px; border-radius: 0 var(--r) var(--r) 0; font-size: 13.5px; color: var(--muted); }
-.locked b { color: var(--ink); }
-.locked ul { margin: 8px 0 0; padding-left: 18px; }
-.locked li { font-family: var(--mono); font-size: 12.5px; margin: 3px 0; }
-
-.log { width: 100%; border-collapse: collapse; font-size: 13.5px; }
-.log th {
-  font-family: var(--cond); font-size: 12px; letter-spacing: .1em; text-transform: uppercase;
-  color: var(--muted); text-align: left; padding: 0 12px 8px 0; border-bottom: 1px solid var(--rule); font-weight: 600;
-}
-.log td { padding: 9px 12px 9px 0; border-bottom: 1px solid var(--rule); vertical-align: top; }
-.log td.when, .log td.who-col { font-family: var(--mono); font-size: 12px; white-space: nowrap; }
-.log td.act { font-weight: 500; }
-.log td.detail { color: var(--muted); font-family: var(--mono); font-size: 11.5px; word-break: break-all; }
-
-/* Indikator kesegaran: papan yang membeku harus TERLIHAT membeku.
-   Tanpa ini, jaringan putus terlihat persis seperti "tidak ada yang
-   menunggu" — kegagalan paling berbahaya di panel triase. */
-.stale { color: var(--waiting); }
-
-.contact { display: flex; align-items: center; gap: 12px; padding: 10px 0; border-bottom: 1px solid var(--rule); }
-.contact .num { font-family: var(--mono); font-size: 13.5px; }
-.contact .lbl { flex: 1; font-size: 14px; }
-.contact .off { font-size: 12px; color: var(--muted); }
-.contact-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 10px; margin-top: 16px; }
-.contact-add input { padding: 9px 11px; border: 1px solid var(--rule); border-radius: var(--r); }
-.contact-add input:first-child { font-family: var(--mono); }
-@media (max-width: 560px) { .contact-add { grid-template-columns: 1fr; } }
-
+button, input, textarea { font: inherit; }
+button { color: inherit; }
+button, [role="button"] { -webkit-tap-highlight-color: transparent; }
+:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
 .hidden { display: none !important; }
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0,0,0,0); white-space: nowrap; border: 0; }
 
-@media (max-width: 860px) {
-  .shell { grid-template-columns: 1fr; }
-  .queue { border-right: 0; }
-  .thread { position: fixed; inset: 56px 0 0; z-index: 30; border-top: 1px solid var(--rule); }
-  .bubble { max-width: 88%; }
+/* ---------- shared ---------- */
+.icon { width: 18px; height: 18px; fill: none; stroke: currentColor; stroke-width: 1.8; stroke-linecap: round; stroke-linejoin: round; flex: none; }
+.btn {
+  min-height: 38px; display: inline-flex; align-items: center; justify-content: center; gap: 8px;
+  border: 1px solid var(--line-strong); border-radius: var(--radius-sm); padding: 8px 13px;
+  background: var(--surface); color: var(--ink); font-weight: 550; cursor: pointer;
+  transition: background-color .12s ease, border-color .12s ease, color .12s ease, transform .12s ease;
+}
+.btn:hover { background: #f4f5f7; border-color: #c8ccd2; }
+.btn:active { transform: translateY(1px); }
+.btn:disabled { opacity: .45; cursor: not-allowed; transform: none; }
+.btn.primary { background: var(--ink); color: #fff; border-color: var(--ink); }
+.btn.primary:hover { background: #2b2d31; border-color: #2b2d31; }
+.btn.accent { background: var(--accent); color: #fff; border-color: var(--accent); }
+.btn.accent:hover { background: var(--accent-hover); border-color: var(--accent-hover); }
+.btn.danger-quiet { color: var(--danger); }
+.btn.compact { min-height: 32px; padding: 5px 10px; font-size: 13px; }
+.badge {
+  display: inline-flex; align-items: center; gap: 6px; min-height: 24px; padding: 3px 8px;
+  border-radius: 999px; font-size: 12px; line-height: 1; font-weight: 600; white-space: nowrap;
+  background: #f1f2f4; color: #555960;
+}
+.badge::before { content: ""; width: 6px; height: 6px; border-radius: 50%; background: currentColor; opacity: .85; }
+.badge.QUEUED { background: var(--waiting-soft); color: var(--waiting); }
+.badge.ADMIN_ACTIVE { background: var(--accent-soft); color: var(--accent); }
+.badge.BOT_ACTIVE { background: var(--success-soft); color: var(--success); }
+.badge.IDLE_CLOSED { color: var(--closed); }
+.error-box { padding: 11px 12px; border: 1px solid #f2c8c2; border-radius: var(--radius-sm); background: var(--danger-soft); color: var(--danger); font-size: 13px; }
+.empty-state { padding: 36px 24px; text-align: center; color: var(--muted); }
+.empty-state strong { display: block; color: var(--ink-soft); font-size: 14px; margin-bottom: 4px; }
+.skeleton { background: #eceef1; border-radius: 6px; animation: pulse 1.5s ease-in-out infinite; }
+
+/* ---------- login ---------- */
+.login-screen { min-height: 100vh; display: grid; grid-template-columns: minmax(360px, 1fr) minmax(420px, 560px); background: var(--surface); }
+.login-context { padding: clamp(40px, 7vw, 96px); background: var(--ink); color: #fff; display: flex; flex-direction: column; justify-content: space-between; }
+.login-brand { display: inline-flex; align-items: center; gap: 12px; font-size: 15px; font-weight: 650; letter-spacing: -.01em; }
+.brand-mark { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: #fff; color: var(--ink); font-weight: 750; letter-spacing: -.04em; }
+.login-copy { max-width: 570px; margin: auto 0; }
+.login-copy .kicker { color: #9fa3aa; font-size: 12px; font-weight: 650; text-transform: uppercase; letter-spacing: .12em; }
+.login-copy h1 { margin: 14px 0 18px; font-size: clamp(35px, 4.2vw, 62px); line-height: 1.02; letter-spacing: -.045em; font-weight: 620; text-wrap: balance; }
+.login-copy p { margin: 0; max-width: 460px; color: #b9bdc4; font-size: 16px; line-height: 1.65; }
+.login-note { color: #858a93; font-size: 12px; }
+.login-panel { display: grid; place-items: center; padding: 40px; }
+.login-form { width: 100%; max-width: 360px; }
+.login-form h2 { margin: 0 0 8px; font-size: 26px; letter-spacing: -.025em; font-weight: 620; }
+.login-form > p { margin: 0 0 28px; color: var(--muted); }
+.field { display: grid; gap: 7px; margin-bottom: 17px; }
+.field label { color: var(--ink-soft); font-size: 13px; font-weight: 600; }
+.input, .field input, .field textarea {
+  width: 100%; min-height: 42px; padding: 9px 11px; border: 1px solid var(--line-strong);
+  border-radius: var(--radius-sm); background: var(--surface); color: var(--ink);
+  transition: border-color .12s, box-shadow .12s;
+}
+.input:hover, .field input:hover, .field textarea:hover { border-color: #b7bbc2; }
+.input:focus, .field input:focus, .field textarea:focus { outline: none; border-color: var(--accent); box-shadow: 0 0 0 3px rgba(37,99,235,.12); }
+.login-submit { width: 100%; margin-top: 4px; min-height: 43px; }
+.login-error { margin-top: 14px; }
+
+/* ---------- app rail ---------- */
+.app-shell { min-height: 100vh; display: grid; grid-template-columns: var(--rail) minmax(0, 1fr); }
+.app-rail {
+  position: sticky; top: 0; height: 100vh; z-index: 40; padding: 18px 14px 14px;
+  background: var(--surface); border-right: 1px solid var(--line); display: flex; flex-direction: column;
+}
+.rail-brand { height: 42px; display: flex; align-items: center; gap: 10px; padding: 0 8px; margin-bottom: 25px; }
+.rail-brand .brand-mark { width: 30px; height: 30px; color: #fff; background: var(--ink); border-radius: 8px; font-size: 13px; }
+.rail-brand-text { min-width: 0; }
+.rail-brand-text strong { display: block; font-size: 14px; line-height: 1.15; letter-spacing: -.01em; }
+.rail-brand-text span { display: block; color: var(--muted); font-size: 11px; margin-top: 2px; }
+.rail-label { margin: 0 10px 7px; color: var(--faint); font-size: 10px; font-weight: 700; text-transform: uppercase; letter-spacing: .11em; }
+.rail-nav { display: grid; gap: 3px; }
+.nav-item {
+  width: 100%; min-height: 39px; display: flex; align-items: center; gap: 10px; padding: 8px 10px;
+  border: 0; border-radius: 8px; background: transparent; color: #64686f; cursor: pointer;
+  font-weight: 540; text-align: left;
+}
+.nav-item:hover { color: var(--ink); background: #f5f6f7; }
+.nav-item.is-active { color: var(--ink); background: #eff1f4; }
+.nav-item .nav-count { margin-left: auto; min-width: 20px; height: 20px; padding: 0 6px; display: grid; place-items: center; border-radius: 999px; background: var(--waiting-soft); color: var(--waiting); font-size: 11px; font-weight: 700; }
+.rail-spacer { flex: 1; }
+.rail-status { padding: 12px 10px; margin-bottom: 7px; border-top: 1px solid var(--line); }
+.connection { display: flex; align-items: center; gap: 8px; min-width: 0; color: var(--muted); font-size: 12px; }
+.connection-dot { width: 7px; height: 7px; flex: none; border-radius: 50%; background: var(--closed); box-shadow: 0 0 0 3px #f1f2f4; }
+.connection-dot.ok { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+.connection-dot.bad { background: var(--danger); box-shadow: 0 0 0 3px var(--danger-soft); }
+.connection-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.connection-text.stale { color: var(--danger); }
+.rail-user { min-height: 48px; display: flex; align-items: center; gap: 9px; padding: 7px 7px 7px 9px; border-radius: 9px; }
+.user-avatar { width: 30px; height: 30px; display: grid; place-items: center; flex: none; border-radius: 50%; background: #eef0f3; color: #555960; font-size: 11px; font-weight: 700; text-transform: uppercase; }
+.user-copy { min-width: 0; flex: 1; }
+.user-copy strong, .user-copy span { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.user-copy strong { font-size: 12px; font-weight: 600; }
+.user-copy span { color: var(--muted); font-size: 11px; }
+.logout-btn { width: 30px; height: 30px; display: grid; place-items: center; border: 0; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; }
+.logout-btn:hover { color: var(--danger); background: var(--danger-soft); }
+.logout-btn .icon { width: 16px; height: 16px; }
+
+/* ---------- inbox composition ---------- */
+.workspace { min-width: 0; min-height: 100vh; }
+.inbox-workspace { display: grid; grid-template-columns: var(--queue) minmax(0,1fr); background: var(--canvas); }
+.queue-pane { min-width: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column; background: var(--surface); border-right: 1px solid var(--line); }
+.queue-header { padding: 23px 18px 13px; border-bottom: 1px solid var(--line); }
+.queue-title-row { display: flex; align-items: center; justify-content: space-between; gap: 12px; margin-bottom: 15px; }
+.queue-title { margin: 0; font-size: 20px; font-weight: 620; letter-spacing: -.025em; }
+.queue-summary { color: var(--muted); font-size: 12px; }
+.search-box { position: relative; }
+.search-box .icon { position: absolute; left: 11px; top: 50%; transform: translateY(-50%); width: 15px; height: 15px; color: var(--faint); pointer-events: none; }
+.search-box input { width: 100%; height: 38px; padding: 8px 34px; border: 1px solid var(--line); border-radius: 8px; background: #f7f8f9; color: var(--ink); outline: none; }
+.search-box input:focus { border-color: #bfc5ce; background: #fff; box-shadow: 0 0 0 3px rgba(24,25,27,.05); }
+.search-clear { position: absolute; right: 5px; top: 4px; width: 30px; height: 30px; border: 0; border-radius: 6px; background: transparent; color: var(--muted); cursor: pointer; font-size: 17px; }
+.search-clear:hover { background: #eceef1; color: var(--ink); }
+.queue-filters { display: flex; gap: 5px; margin-top: 11px; overflow-x: auto; scrollbar-width: none; }
+.queue-filters::-webkit-scrollbar { display: none; }
+.filter-chip { min-height: 29px; padding: 5px 9px; border: 1px solid transparent; border-radius: 7px; background: transparent; color: var(--muted); cursor: pointer; font-size: 12px; white-space: nowrap; }
+.filter-chip:hover { color: var(--ink); background: #f3f4f6; }
+.filter-chip.is-active { color: var(--ink); background: #eef0f3; font-weight: 600; }
+.queue-scroll { flex: 1; overflow-y: auto; padding: 10px; scrollbar-color: #d7dade transparent; scrollbar-width: thin; }
+.queue-group + .queue-group { margin-top: 18px; }
+.group-heading { display: flex; align-items: center; gap: 8px; padding: 4px 7px 7px; color: var(--muted); font-size: 11px; font-weight: 700; text-transform: uppercase; letter-spacing: .075em; }
+.group-heading strong { color: var(--ink-soft); font-size: 11px; }
+.group-heading .count { margin-left: auto; font-variant-numeric: tabular-nums; }
+.conversation-row {
+  width: 100%; display: grid; grid-template-columns: auto minmax(0,1fr) auto; gap: 10px; align-items: center;
+  min-height: 62px; padding: 9px 9px; border: 1px solid transparent; border-radius: 9px;
+  background: transparent; color: var(--ink); text-align: left; cursor: pointer;
+}
+.conversation-row:hover { background: #f5f6f8; }
+.conversation-row.is-active { background: var(--accent-soft); border-color: #dbeafe; }
+.row-signal { width: 9px; height: 9px; border-radius: 50%; background: var(--closed); box-shadow: 0 0 0 3px #f1f2f4; }
+.conversation-row[data-state="QUEUED"] .row-signal { background: var(--waiting); box-shadow: 0 0 0 3px var(--waiting-soft); }
+.conversation-row[data-state="ADMIN_ACTIVE"] .row-signal { background: var(--accent); box-shadow: 0 0 0 3px var(--accent-soft); }
+.conversation-row[data-state="BOT_ACTIVE"] .row-signal { background: var(--success); box-shadow: 0 0 0 3px var(--success-soft); }
+.conversation-copy { min-width: 0; }
+.conversation-copy strong { display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 13px; font-weight: 610; }
+.conversation-preview { display: block; margin-top: 3px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: var(--muted); font-size: 12px; }
+.row-meta { align-self: start; text-align: right; color: var(--faint); font-size: 10px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.row-meta .wait-time { display: block; padding: 3px 6px; border-radius: 5px; background: var(--waiting-soft); color: var(--waiting); font-size: 11px; font-weight: 700; }
+.row-meta .owner { display: block; max-width: 80px; overflow: hidden; text-overflow: ellipsis; margin-top: 4px; }
+.urgency-bars { height: 12px; display: inline-flex; align-items: flex-end; gap: 2px; margin-top: 4px; }
+.urgency-bars i { display: block; width: 2px; border-radius: 2px; background: #e4c08d; }
+.urgency-bars i:nth-child(1) { height: 4px; }
+.urgency-bars i:nth-child(2) { height: 8px; }
+.urgency-bars i:nth-child(3) { height: 12px; }
+.urgency-bars[data-level="1"] i:nth-child(n+2), .urgency-bars[data-level="2"] i:nth-child(3) { background: #eee; }
+.urgency-bars[data-level="3"] i { background: var(--waiting); }
+
+/* ---------- conversation ---------- */
+.conversation-pane { min-width: 0; height: 100vh; display: grid; background: var(--canvas); }
+.conversation-empty { display: grid; place-items: center; padding: 40px; }
+.empty-illustration { width: 72px; height: 72px; display: grid; place-items: center; border-radius: 20px; background: #eceef1; color: #8a8e95; margin: 0 auto 18px; }
+.empty-illustration .icon { width: 30px; height: 30px; }
+.conversation-empty-copy { max-width: 340px; text-align: center; }
+.conversation-empty h2 { margin: 0 0 7px; font-size: 17px; font-weight: 620; letter-spacing: -.015em; }
+.conversation-empty p { margin: 0; color: var(--muted); font-size: 13px; line-height: 1.6; }
+.conversation-view { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr) auto; }
+.thread-header { min-height: 73px; padding: 15px 22px; display: flex; align-items: center; gap: 12px; background: rgba(246,247,249,.96); border-bottom: 1px solid var(--line); }
+.mobile-back { display: none; width: 34px; height: 34px; place-items: center; border: 0; border-radius: 8px; background: transparent; cursor: pointer; }
+.thread-avatar { width: 37px; height: 37px; display: grid; place-items: center; flex: none; border-radius: 50%; background: #e7e9ed; color: #5c6067; font-size: 12px; font-weight: 700; }
+.thread-identity { min-width: 0; }
+.thread-identity h2 { max-width: min(47vw, 540px); margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 14px; font-weight: 650; }
+.thread-identity p { margin: 3px 0 0; color: var(--muted); font-size: 11px; }
+.thread-spacer { flex: 1; }
+.thread-actions { display: flex; align-items: center; gap: 8px; }
+.messages { min-height: 0; overflow-y: auto; padding: 26px clamp(20px, 5vw, 72px); display: flex; flex-direction: column; gap: 10px; scrollbar-width: thin; }
+.message { max-width: min(68%, 650px); }
+.message.in { align-self: flex-start; }
+.message.out { align-self: flex-end; }
+.message-meta { display: flex; gap: 6px; align-items: center; margin: 0 3px 4px; color: var(--faint); font-size: 10px; }
+.message.out .message-meta { justify-content: flex-end; }
+.message-bubble { padding: 10px 13px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); color: var(--ink-soft); line-height: 1.55; white-space: pre-wrap; word-break: break-word; box-shadow: 0 1px 1px rgba(15,23,42,.025); }
+.message.out .message-bubble { background: #eaf2ff; border-color: #d8e6ff; color: #1f3e70; }
+.message.out.by-bot .message-bubble { background: #eef8f2; border-color: #d9efe1; color: #28513a; }
+.composer-wrap { padding: 13px clamp(18px, 4vw, 64px) 18px; background: var(--canvas); border-top: 1px solid var(--line); }
+.composer { max-width: 900px; margin: 0 auto; padding: 8px 8px 8px 12px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 8px; align-items: end; border: 1px solid var(--line-strong); border-radius: 12px; background: var(--surface); box-shadow: 0 1px 2px rgba(15,23,42,.04); }
+.composer:focus-within { border-color: #a9bce6; box-shadow: 0 0 0 3px rgba(37,99,235,.09); }
+.composer textarea { width: 100%; min-height: 40px; max-height: 160px; resize: none; padding: 9px 2px; border: 0; outline: 0; background: transparent; line-height: 1.45; }
+.composer textarea:disabled { color: var(--muted); cursor: not-allowed; }
+.send-btn { width: 39px; height: 39px; display: grid; place-items: center; border: 0; border-radius: 9px; background: var(--accent); color: #fff; cursor: pointer; }
+.send-btn:hover { background: var(--accent-hover); }
+.send-btn:disabled { opacity: .35; cursor: not-allowed; }
+.send-btn .icon { width: 17px; height: 17px; }
+.composer-hint { max-width: 900px; margin: 7px auto 0; color: var(--muted); font-size: 11px; }
+
+/* ---------- settings / audit ---------- */
+.page-workspace { height: 100vh; overflow-y: auto; background: var(--canvas); }
+.page-container { width: min(920px, calc(100% - 56px)); margin: 0 auto; padding: 36px 0 72px; }
+.page-heading { margin-bottom: 30px; }
+.page-heading h1 { margin: 0; font-size: 26px; font-weight: 620; letter-spacing: -.035em; }
+.page-heading p { margin: 7px 0 0; color: var(--muted); }
+.settings-section { padding: 24px 0; border-top: 1px solid var(--line); display: grid; grid-template-columns: 220px minmax(0,1fr); gap: 34px; }
+.settings-section:first-of-type { border-top: 0; padding-top: 0; }
+.section-label h2 { margin: 0; font-size: 14px; font-weight: 650; }
+.section-label p { margin: 6px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.section-body { min-width: 0; }
+.status-row { min-height: 46px; display: flex; align-items: center; gap: 12px; }
+.status-copy { flex: 1; }
+.status-copy strong, .status-copy span { display: block; }
+.status-copy strong { font-size: 13px; }
+.status-copy span { margin-top: 3px; color: var(--muted); font-size: 12px; }
+.qr-box { width: 230px; margin-top: 15px; padding: 15px; border: 1px solid var(--line); border-radius: var(--radius); background: #fff; }
+.qr-box img { display: block; width: 198px; height: 198px; image-rendering: pixelated; }
+.setting-row { min-height: 63px; display: grid; grid-template-columns: minmax(0,1fr) 112px; gap: 22px; align-items: center; padding: 11px 0; border-bottom: 1px solid var(--line); }
+.setting-row:last-child { border-bottom: 0; }
+.setting-name strong, .setting-name span { display: block; }
+.setting-name strong { font-size: 13px; font-weight: 600; }
+.setting-name span { margin-top: 3px; color: var(--muted); font-size: 11px; line-height: 1.5; }
+.setting-input { width: 100%; height: 37px; padding: 7px 9px; border: 1px solid var(--line-strong); border-radius: 7px; text-align: right; background: var(--surface); font-family: var(--mono); font-size: 12px; }
+.setting-input:invalid { border-color: #e0a7a0; background: var(--danger-soft); }
+.settings-actions { margin-top: 16px; display: flex; align-items: center; gap: 10px; }
+.contact-list { display: grid; }
+.contact-row { min-height: 52px; display: grid; grid-template-columns: 150px minmax(0,1fr) auto; gap: 13px; align-items: center; padding: 8px 0; border-bottom: 1px solid var(--line); }
+.contact-phone { font-family: var(--mono); font-size: 12px; }
+.contact-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.contact-off { color: var(--muted); font-size: 11px; }
+.contact-add { display: grid; grid-template-columns: 1fr 1fr auto; gap: 8px; margin-top: 15px; }
+.contact-add .input { min-height: 38px; }
+.readonly-note { padding: 13px 14px; border: 1px solid var(--line); border-radius: var(--radius); background: #f2f3f5; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.readonly-note strong { color: var(--ink-soft); }
+.readonly-note code { font-family: var(--mono); font-size: 11px; }
+.bot-switch { display: flex; align-items: center; gap: 12px; padding: 12px 13px; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.bot-switch .status-copy { min-width: 0; }
+.audit-shell { overflow-x: auto; border: 1px solid var(--line); border-radius: var(--radius); background: var(--surface); }
+.audit-table { width: 100%; min-width: 780px; border-collapse: collapse; font-size: 12px; }
+.audit-table th { padding: 10px 12px; text-align: left; color: var(--muted); background: #f8f9fa; border-bottom: 1px solid var(--line); font-size: 10px; font-weight: 700; letter-spacing: .06em; text-transform: uppercase; }
+.audit-table td { padding: 11px 12px; border-bottom: 1px solid var(--line); vertical-align: top; }
+.audit-table tr:last-child td { border-bottom: 0; }
+.audit-table .mono { font-family: var(--mono); font-size: 10.5px; color: var(--muted); }
+.audit-detail { max-width: 360px; word-break: break-word; }
+
+/* ---------- toast / dialogs ---------- */
+.toast { position: fixed; left: 50%; bottom: 22px; z-index: 100; transform: translate(-50%, 12px); max-width: min(430px, calc(100vw - 30px)); padding: 10px 14px; border-radius: 9px; background: #202226; color: #fff; box-shadow: var(--shadow-pop); opacity: 0; pointer-events: none; transition: opacity .16s ease, transform .16s ease; font-size: 13px; }
+.toast.is-visible { opacity: 1; transform: translate(-50%,0); }
+
+/* ---------- responsive ---------- */
+@media (max-width: 1040px) {
+  :root { --rail: 76px; --queue: 345px; }
+  .rail-brand { justify-content: center; padding: 0; }
+  .rail-brand-text, .rail-label, .nav-item span, .user-copy, .connection-text { display: none; }
+  .nav-item { justify-content: center; padding: 8px; }
+  .nav-item .nav-count { position: absolute; margin: -25px 0 0 24px; }
+  .rail-status { display: flex; justify-content: center; }
+  .rail-user { justify-content: center; padding: 7px; }
+  .logout-btn { display: none; }
+}
+@media (max-width: 760px) {
+  :root { --rail: 0px; --queue: 100%; }
+  .app-shell { display: block; padding-bottom: 62px; }
+  .app-rail { position: fixed; inset: auto 0 0; width: 100%; height: 62px; padding: 7px 10px calc(7px + env(safe-area-inset-bottom)); border: 0; border-top: 1px solid var(--line); flex-direction: row; align-items: center; z-index: 80; }
+  .rail-brand, .rail-label, .rail-status, .rail-user, .rail-spacer { display: none; }
+  .rail-nav { width: 100%; display: flex; justify-content: space-around; }
+  .nav-item { width: auto; min-width: 72px; min-height: 46px; display: grid; justify-items: center; gap: 2px; padding: 4px 8px; font-size: 10px; }
+  .nav-item span { display: block; }
+  .nav-item .icon { width: 19px; height: 19px; }
+  .nav-item .nav-count { position: absolute; margin: -19px 0 0 23px; }
+  .workspace { min-height: calc(100vh - 62px); }
+  .inbox-workspace { display: block; }
+  .queue-pane { height: calc(100vh - 62px); border-right: 0; }
+  .conversation-pane { position: fixed; inset: 0 0 62px; z-index: 60; height: auto; }
+  .conversation-pane.is-empty-mobile { display: none; }
+  .mobile-back { display: grid; }
+  .thread-header { padding: 11px 12px; min-height: 60px; }
+  .thread-actions .btn { min-width: 0; padding: 7px 9px; font-size: 12px; }
+  .messages { padding: 18px 13px; }
+  .message { max-width: 88%; }
+  .composer-wrap { padding: 9px 10px 12px; }
+  .composer-hint { display: none; }
+  .page-workspace { height: calc(100vh - 62px); }
+  .page-container { width: calc(100% - 28px); padding: 24px 0 48px; }
+  .settings-section { grid-template-columns: 1fr; gap: 14px; padding: 21px 0; }
+  .contact-add { grid-template-columns: 1fr; }
+  .login-screen { grid-template-columns: 1fr; }
+  .login-context { min-height: 220px; padding: 28px; }
+  .login-copy { margin: 45px 0 0; }
+  .login-copy h1 { font-size: 34px; }
+  .login-copy p, .login-note { display: none; }
+  .login-panel { padding: 35px 24px; place-items: start center; }
+}
+@media (max-width: 430px) {
+  .setting-row { grid-template-columns: 1fr 90px; gap: 12px; }
+  .contact-row { grid-template-columns: 1fr auto; }
+  .contact-phone { grid-column: 1; }
+  .contact-label { grid-column: 1; }
+  .contact-row .btn { grid-column: 2; grid-row: 1 / 3; }
 }
 @media (prefers-reduced-motion: reduce) {
-  *, *::after { animation: none !important; transition: none !important; }
+  *, *::before, *::after { animation-duration: .01ms !important; animation-iteration-count: 1 !important; transition-duration: .01ms !important; scroll-behavior: auto !important; }
 }
+@keyframes pulse { 0%,100% { opacity:.5; } 50% { opacity:1; } }
 </style>
 </head>
 <body>
 
-<div class="topbar">
-  <div class="brand">MARAWA<span>PST Padang Pariaman</span></div>
-  <div class="spacer"></div>
-  <div class="conn"><span class="dot" id="conn_dot"></span><span id="conn_text">memeriksa…</span></div>
-  <nav class="tabs hidden" id="tabs">
-    <button class="tab is-on" data-tab="inbox">Kotak masuk</button>
-    <button class="tab hidden" data-tab="settings" id="tab_settings">Setelan</button>
-    <button class="tab hidden" data-tab="audit" id="tab_audit">Riwayat</button>
-  </nav>
-  <div class="who hidden" id="who"></div>
-  <button class="btn ghost hidden" id="logout_btn">Keluar</button>
+<svg class="sr-only" aria-hidden="true" width="0" height="0">
+  <symbol id="i-inbox" viewBox="0 0 24 24"><path d="M4 4h16v14H4z"/><path d="M4 14h4l2 3h4l2-3h4"/></symbol>
+  <symbol id="i-settings" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06A1.7 1.7 0 0 0 15 19.4a1.7 1.7 0 0 0-1 .6 1.7 1.7 0 0 0-.4 1v.1h-4v-.1a1.7 1.7 0 0 0-.4-1 1.7 1.7 0 0 0-1-.6 1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-.6-1 1.7 1.7 0 0 0-1-.4H3v-4h.1a1.7 1.7 0 0 0 1-.4 1.7 1.7 0 0 0 .6-1 1.7 1.7 0 0 0-.34-1.88l-.06-.06 2.83-2.83.06.06A1.7 1.7 0 0 0 9 4.6a1.7 1.7 0 0 0 1-.6 1.7 1.7 0 0 0 .4-1V3h4v.1a1.7 1.7 0 0 0 .4 1 1.7 1.7 0 0 0 1 .6 1.7 1.7 0 0 0 1.88-.34l.06-.06 2.83 2.83-.06.06A1.7 1.7 0 0 0 19.4 9c.12.38.33.73.6 1 .27.27.62.48 1 .6h.1v4H21c-.38.12-.73.33-1 .6-.27.27-.48.62-.6 1z"/></symbol>
+  <symbol id="i-audit" viewBox="0 0 24 24"><path d="M6 3h12v18H6z"/><path d="M9 7h6M9 11h6M9 15h4"/></symbol>
+  <symbol id="i-search" viewBox="0 0 24 24"><circle cx="11" cy="11" r="7"/><path d="m20 20-4-4"/></symbol>
+  <symbol id="i-chat" viewBox="0 0 24 24"><path d="M21 12a8 8 0 0 1-8 8H5l-3 2 1-5a9 9 0 1 1 18-5z"/></symbol>
+  <symbol id="i-send" viewBox="0 0 24 24"><path d="m22 2-7 20-4-9-9-4z"/><path d="M22 2 11 13"/></symbol>
+  <symbol id="i-arrow-left" viewBox="0 0 24 24"><path d="m15 18-6-6 6-6"/></symbol>
+  <symbol id="i-refresh" viewBox="0 0 24 24"><path d="M20 6v5h-5"/><path d="M4 18v-5h5"/><path d="M18.5 9A7 7 0 0 0 6 6.5L4 11M5.5 15A7 7 0 0 0 18 17.5l2-4.5"/></symbol>
+  <symbol id="i-log-out" viewBox="0 0 24 24"><path d="M10 17l5-5-5-5M15 12H3M15 4h5v16h-5"/></symbol>
+</svg>
+
+<section class="login-screen" id="login_screen">
+  <div class="login-context">
+    <div class="login-brand"><span class="brand-mark">M</span><span>MARAWA</span></div>
+    <div class="login-copy">
+      <div class="kicker">Pelayanan Statistik Terpadu</div>
+      <h1>Percakapan warga, ditangani tanpa terlewat.</h1>
+      <p>Panel operasional petugas BPS Kabupaten Padang Pariaman untuk mengambil alih layanan WhatsApp saat bantuan manusia dibutuhkan.</p>
+    </div>
+    <div class="login-note">BPS Kabupaten Padang Pariaman · Sistem internal</div>
+  </div>
+  <div class="login-panel">
+    <form class="login-form" id="login_form">
+      <h2>Masuk ke panel</h2>
+      <p>Gunakan akun petugas yang telah terdaftar.</p>
+      <div class="field">
+        <label for="admin_id">Nama pengguna</label>
+        <input id="admin_id" name="username" autocomplete="username" required>
+      </div>
+      <div class="field">
+        <label for="password">Kata sandi</label>
+        <input id="password" name="password" type="password" autocomplete="current-password" required>
+      </div>
+      <div class="field hidden" id="totp_field">
+        <label for="totp">Kode autentikasi (opsional)</label>
+        <input id="totp" name="one-time-code" inputmode="numeric" maxlength="6" autocomplete="one-time-code" pattern="[0-9]{6}">
+      </div>
+      <button class="btn primary login-submit" type="submit" id="login_btn">Masuk</button>
+      <div class="error-box login-error hidden" id="login_err" role="alert"></div>
+    </form>
+  </div>
+</section>
+
+<div class="app-shell hidden" id="app_shell">
+  <aside class="app-rail">
+    <div class="rail-brand">
+      <span class="brand-mark">M</span>
+      <span class="rail-brand-text"><strong>MARAWA</strong><span>PST Padang Pariaman</span></span>
+    </div>
+    <p class="rail-label">Ruang kerja</p>
+    <nav class="rail-nav" aria-label="Navigasi utama">
+      <button class="nav-item is-active" data-tab="inbox" aria-current="page"><svg class="icon"><use href="#i-inbox"/></svg><span>Kotak masuk</span><b class="nav-count hidden" id="waiting_count">0</b></button>
+      <button class="nav-item hidden" data-tab="settings" id="nav_settings"><svg class="icon"><use href="#i-settings"/></svg><span>Setelan</span></button>
+      <button class="nav-item hidden" data-tab="audit" id="nav_audit"><svg class="icon"><use href="#i-audit"/></svg><span>Riwayat</span></button>
+    </nav>
+    <div class="rail-spacer"></div>
+    <div class="rail-status">
+      <div class="connection"><span class="connection-dot" id="conn_dot"></span><span class="connection-text" id="conn_text">Memeriksa WhatsApp…</span></div>
+    </div>
+    <div class="rail-user">
+      <span class="user-avatar" id="user_avatar">—</span>
+      <span class="user-copy"><strong id="user_name">—</strong><span id="user_role">—</span></span>
+      <button class="logout-btn" id="logout_btn" aria-label="Keluar"><svg class="icon"><use href="#i-log-out"/></svg></button>
+    </div>
+  </aside>
+
+  <section class="workspace inbox-workspace" id="inbox_view">
+    <aside class="queue-pane">
+      <header class="queue-header">
+        <div class="queue-title-row"><h1 class="queue-title">Kotak masuk</h1><span class="queue-summary" id="queue_summary">Memuat…</span></div>
+        <div class="search-box">
+          <svg class="icon"><use href="#i-search"/></svg>
+          <label class="sr-only" for="queue_search">Cari percakapan</label>
+          <input id="queue_search" type="search" placeholder="Cari nomor atau petugas" autocomplete="off">
+          <button class="search-clear hidden" id="search_clear" aria-label="Hapus pencarian">×</button>
+        </div>
+        <div class="queue-filters" role="tablist" aria-label="Filter percakapan">
+          <button class="filter-chip is-active" data-filter="ALL">Semua</button>
+          <button class="filter-chip" data-filter="QUEUED">Menunggu</button>
+          <button class="filter-chip" data-filter="ADMIN_ACTIVE">Ditangani</button>
+          <button class="filter-chip" data-filter="BOT_ACTIVE">Bot</button>
+        </div>
+      </header>
+      <div class="queue-scroll" id="queue"><div class="empty-state"><strong>Memuat percakapan…</strong></div></div>
+    </aside>
+
+    <main class="conversation-pane is-empty-mobile" id="conversation_pane">
+      <div class="conversation-empty" id="conversation_empty">
+        <div class="conversation-empty-copy">
+          <div class="empty-illustration"><svg class="icon"><use href="#i-chat"/></svg></div>
+          <h2>Pilih percakapan</h2>
+          <p>Buka percakapan dari kotak masuk untuk membaca konteks, mengambil alih, dan membalas warga.</p>
+        </div>
+      </div>
+      <div class="conversation-view hidden" id="conversation_view">
+        <header class="thread-header" id="thread_header"></header>
+        <div class="messages" id="messages"></div>
+        <div class="composer-wrap" id="composer_wrap"></div>
+      </div>
+    </main>
+  </section>
+
+  <section class="workspace page-workspace hidden" id="settings_view"></section>
+  <section class="workspace page-workspace hidden" id="audit_view"></section>
 </div>
 
-<div class="login-wrap" id="login_view">
-  <form class="login" id="login_form">
-    <h1>Masuk panel petugas</h1>
-    <p>Gunakan nama pengguna dan kata sandi Anda.</p>
-    <div class="field">
-      <label for="admin_id">Nama pengguna</label>
-      <input id="admin_id" name="username" autocomplete="username" required>
-    </div>
-    <div class="field">
-      <label for="password">Kata sandi</label>
-      <input id="password" name="password" type="password" autocomplete="current-password" required>
-    </div>
-    <div class="field hidden" id="totp_field">
-      <label for="totp">Kode 6 angka (opsional)</label>
-      <input id="totp" name="one-time-code" inputmode="numeric" maxlength="6"
-             autocomplete="one-time-code" pattern="[0-9]{6}">
-    </div>
-    <button class="btn" type="submit" style="width:100%" id="login_btn">Masuk</button>
-    <div class="alert hidden" id="login_err"></div>
-  </form>
-</div>
-
-<div class="shell hidden" id="app_view">
-  <aside class="queue" id="queue"></aside>
-  <main class="thread hidden" id="thread"></main>
-</div>
-
-<div class="page hidden" id="settings_view"></div>
-<div class="page hidden" id="audit_view"></div>
-
-<div id="toast"></div>
+<div class="toast" id="toast" role="status" aria-live="polite"></div>
 
 <script>
 'use strict';
 const API = '';
 let TOKEN = sessionStorage.getItem('marawa_token') || '';
-let ME = null, ACTIVE = null, CONVOS = [], VERSION = 0;
-let pollTimer = null, tickTimer = null;
+let ME = null;
+let ACTIVE = null;
+let CONVOS = [];
+let VERSION = 0;
+let ACTIVE_FILTER = 'ALL';
+let SEARCH_QUERY = '';
+let LAST_OK = Date.now();
+let POLL_TIMER = null;
+let TICK_TIMER = null;
+let PENDING_REQUEST_ID = null;
+let PENDING_BODY = '';
+let BOT_ENABLED = true;
 
 const $ = (id) => document.getElementById(id);
-function esc(s) { const d = document.createElement('div'); d.textContent = s ?? ''; return d.innerHTML; }
-function uuid() {
-  return (crypto.randomUUID && crypto.randomUUID()) || 'r-' + Date.now() + '-' + Math.random().toString(16).slice(2);
-}
-function toast(msg) {
-  const t = $('toast'); t.textContent = msg; t.classList.add('show');
-  clearTimeout(t._h); t._h = setTimeout(() => t.classList.remove('show'), 2800);
+const icon = (name) => '<svg class="icon" aria-hidden="true"><use href="#i-' + name + '"/></svg>';
+function esc(value) { const d = document.createElement('div'); d.textContent = value == null ? '' : String(value); return d.innerHTML; }
+function uuid() { return crypto.randomUUID ? crypto.randomUUID() : 'r-' + Date.now() + '-' + Math.random().toString(16).slice(2); }
+function initials(value) { const clean = String(value || '—').replace(/[^a-zA-Z0-9]/g, ''); return (clean.slice(0, 2) || '—').toUpperCase(); }
+function displayId(c) { return c.display_name || String(c.conversation_id || '').replace('@s.whatsapp.net', ''); }
+function stateLabel(state) { return ({ BOT_ACTIVE:'Dijawab bot', QUEUED:'Menunggu petugas', ADMIN_ACTIVE:'Ditangani petugas', IDLE_CLOSED:'Selesai' })[state] || state || '—'; }
+function formatClock(iso) { if (!iso) return ''; return new Date(iso).toLocaleTimeString('id-ID', { hour:'2-digit', minute:'2-digit', timeZone:'Asia/Jakarta' }); }
+function formatDateTime(iso) { if (!iso) return ''; return new Date(iso).toLocaleString('id-ID', { day:'2-digit', month:'short', year:'numeric', hour:'2-digit', minute:'2-digit', timeZone:'Asia/Jakarta' }); }
+function waitSeconds(iso) { if (!iso) return 0; return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000)); }
+function since(c) { return c.handover_requested_at || c.last_activity_at || ''; }
+function urgency(seconds) { return seconds >= 1800 ? 3 : seconds >= 600 ? 2 : 1; }
+function formatDuration(seconds) { const minutes = Math.floor(seconds / 60); if (minutes >= 60) return Math.floor(minutes / 60) + 'j ' + (minutes % 60) + 'm'; if (minutes > 0) return minutes + 'm'; return Math.max(0, seconds) + 'd'; }
+
+function toast(message) {
+  const node = $('toast');
+  node.textContent = message;
+  node.classList.add('is-visible');
+  clearTimeout(node._timer);
+  node._timer = setTimeout(() => node.classList.remove('is-visible'), 3000);
 }
 
-async function api(method, url, body) {
-  const res = await fetch(API + url, {
+async function api(method, path, body) {
+  const response = await fetch(API + path, {
     method,
-    headers: { 'Content-Type': 'application/json', 'Authorization': 'Bearer ' + TOKEN },
-    body: body ? JSON.stringify(body) : undefined,
+    headers: { 'Content-Type':'application/json', 'Authorization':'Bearer ' + TOKEN },
+    body: body === undefined ? undefined : JSON.stringify(body),
   });
-  if (res.status === 401) { logout(); throw new Error('Sesi berakhir. Masuk kembali.'); }
-  const data = await res.json().catch(() => ({}));
-  if (!res.ok) throw new Error(data.detail || data.message || 'Gagal (' + res.status + ')');
+  const data = await response.json().catch(() => ({}));
+  if (response.status === 401) { logout(); throw new Error('Sesi berakhir. Silakan masuk kembali.'); }
+  if (!response.ok) {
+    const detail = typeof data.detail === 'string' ? data.detail : data.message || data.code;
+    const err = new Error(detail || 'Permintaan gagal (' + response.status + ')');
+    err.status = response.status;
+    err.retryAfter = response.headers.get('Retry-After');
+    throw err;
+  }
   return data;
 }
-
-async function apiBlob(url) {
-  const res = await fetch(API + url, {
-    headers: { 'Authorization': 'Bearer ' + TOKEN },
-  });
-  if (res.status === 401) { logout(); throw new Error('Sesi berakhir. Masuk kembali.'); }
-  if (!res.ok) throw new Error('Gagal (' + res.status + ')');
-  return res.blob();
+async function apiBlob(path) {
+  const response = await fetch(API + path, { headers: { 'Authorization':'Bearer ' + TOKEN } });
+  if (response.status === 401) { logout(); throw new Error('Sesi berakhir. Silakan masuk kembali.'); }
+  if (!response.ok) throw new Error('Gagal memuat gambar (' + response.status + ')');
+  return response.blob();
 }
 
-/* Lama menunggu dihitung dari saat warga meminta petugas. Timer berdetak
-   di sisi klien tiap detik supaya angkanya hidup, tanpa memaksa API
-   di-polling per detik. */
-function waitSeconds(iso) {
-  if (!iso) return 0;
-  return Math.max(0, Math.floor((Date.now() - new Date(iso).getTime()) / 1000));
+function groupedConversations() {
+  const order = ['QUEUED','ADMIN_ACTIVE','BOT_ACTIVE','IDLE_CLOSED'];
+  const query = SEARCH_QUERY.toLowerCase();
+  return order.map((state) => ({
+    state,
+    rows: CONVOS.filter((c) => {
+      if (ACTIVE_FILTER !== 'ALL' && c.state !== ACTIVE_FILTER) return false;
+      if (!query) return true;
+      return [displayId(c), c.conversation_id, c.assigned_admin_id, c.bot_paused_by].some((v) => String(v || '').toLowerCase().includes(query));
+    }).filter((c) => c.state === state),
+  })).filter((group) => group.rows.length);
 }
-function fmtWait(s) {
-  const m = Math.floor(s / 60);
-  if (m >= 60) return Math.floor(m / 60) + ':' + String(m % 60).padStart(2, '0') + '<small>JAM</small>';
-  return m + ':' + String(s % 60).padStart(2, '0');
-}
-function urgency(s) { return s >= 900 ? 3 : s >= 300 ? 2 : 1; }
-function since(c) { return c.handover_requested_at || c.last_activity_at || ''; }
 
-function stateLabel(s) {
-  return { BOT_ACTIVE: 'Dijawab bot', QUEUED: 'Menunggu petugas',
-           ADMIN_ACTIVE: 'Ditangani petugas', IDLE_CLOSED: 'Selesai' }[s] || s;
+function conversationRow(c) {
+  const queued = c.state === 'QUEUED';
+  const seconds = queued ? waitSeconds(since(c)) : 0;
+  const owner = c.bot_paused_by || c.assigned_admin_id || '';
+  const meta = queued
+    ? '<span class="wait-time" data-since="' + esc(since(c)) + '">' + esc(formatDuration(seconds)) + '</span><span class="urgency-bars" data-level="' + urgency(seconds) + '"><i></i><i></i><i></i></span>'
+    : '<span>' + esc(owner || formatClock(c.last_activity_at)) + '</span>';
+  const preview = queued ? (c.last_message || 'Meminta bantuan petugas') : stateLabel(c.state);
+  return '<button class="conversation-row' + (ACTIVE === c.conversation_id ? ' is-active' : '') + '" data-open="' + esc(c.conversation_id) + '" data-state="' + esc(c.state) + '">' +
+    '<span class="row-signal"></span><span class="conversation-copy"><strong>' + esc(displayId(c)) + '</strong><span class="conversation-preview">' + esc(preview) + '</span></span><span class="row-meta">' + meta + '</span></button>';
 }
 
 function renderQueue() {
-  const by = (s) => CONVOS.filter((c) => c.state === s);
-  const waiting = by('QUEUED'), held = by('ADMIN_ACTIVE'), bot = by('BOT_ACTIVE'), closed = by('IDLE_CLOSED');
-
-  let html = '<section class="group"><p class="eyebrow ' + (waiting.length ? 'is-waiting' : '') +
-             '">Menunggu petugas <span class="count">' + waiting.length + '</span><hr></p>';
-
-  if (!waiting.length) {
-    html += '<div class="empty">Tidak ada yang menunggu. Bot sedang menangani <b>' + bot.length + '</b> percakapan.</div>';
-  } else {
-    for (const c of waiting) {
-      const s = waitSeconds(since(c));
-      html += '<button class="wait-card" data-urgency="' + urgency(s) + '" data-open="' + esc(c.conversation_id) + '">' +
-        '<div class="wait-top"><span class="contact">' + esc(c.display_name || c.conversation_id) + '</span>' +
-        '<span class="timer" data-since="' + esc(since(c)) + '">' + fmtWait(s) + '</span></div>' +
-        '<div class="preview">' + esc(c.last_message || 'Meminta dibantu petugas.') + '</div></button>';
-    }
+  const waiting = CONVOS.filter((c) => c.state === 'QUEUED').length;
+  $('waiting_count').textContent = String(waiting);
+  $('waiting_count').classList.toggle('hidden', waiting === 0);
+  $('queue_summary').textContent = CONVOS.length + ' percakapan';
+  const groups = groupedConversations();
+  if (!groups.length) {
+    const filtered = SEARCH_QUERY || ACTIVE_FILTER !== 'ALL';
+    $('queue').innerHTML = '<div class="empty-state"><strong>' + (filtered ? 'Tidak ada hasil' : 'Kotak masuk masih kosong') + '</strong>' +
+      (filtered ? 'Coba kata kunci atau filter lain.' : 'Percakapan baru akan muncul otomatis di sini.') + '</div>';
+    return;
   }
-  html += '</section>';
-
-  const quiet = (title, list, extra) => {
-    if (!list.length) return '';
-    let out = '<section class="group"><p class="eyebrow">' + title +
-              ' <span class="count">' + list.length + '</span><hr></p>';
-    for (const c of list) {
-      out += '<button class="row s-' + esc(c.state) + (ACTIVE === c.conversation_id ? ' active' : '') +
-             '" data-open="' + esc(c.conversation_id) + '"><span class="tick"></span>' +
-             '<span class="id">' + esc(c.display_name || c.conversation_id) + '</span>' +
-             '<span class="by">' + (extra ? esc(extra(c)) : '') + '</span></button>';
-    }
-    return out + '</section>';
-  };
-
-  html += quiet('Ditangani petugas', held, (c) => c.bot_paused_by || c.assigned_admin_id || '');
-  html += quiet('Dijawab bot', bot);
-  html += quiet('Selesai', closed);
-  $('queue').innerHTML = html;
+  $('queue').innerHTML = groups.map((group) => '<section class="queue-group"><div class="group-heading"><strong>' + esc(stateLabel(group.state)) + '</strong><span class="count">' + group.rows.length + '</span></div>' + group.rows.map(conversationRow).join('') + '</section>').join('');
 }
 
-/* Timer berdetak tanpa menggambar ulang seluruh daftar — supaya fokus
-   keyboard tidak hilang dan layar tidak berkedip saat petugas membaca. */
 function tickTimers() {
-  document.querySelectorAll('.timer[data-since]').forEach((el) => {
-    const iso = el.getAttribute('data-since');
-    if (!iso) return;
-    const s = waitSeconds(iso);
-    el.innerHTML = fmtWait(s);
-    const card = el.closest('.wait-card');
-    if (card) card.setAttribute('data-urgency', urgency(s));
+  document.querySelectorAll('[data-since]').forEach((node) => {
+    const seconds = waitSeconds(node.dataset.since);
+    node.textContent = formatDuration(seconds);
+    const bars = node.parentElement && node.parentElement.querySelector('.urgency-bars');
+    if (bars) bars.dataset.level = String(urgency(seconds));
   });
-}
-
-async function openThread(id) {
-  ACTIVE = id;
-  let data;
-  try { data = await api('GET', '/conversations/' + encodeURIComponent(id)); }
-  catch (e) { toast(e.message); return; }
-
-  const conv = data.conversation || {}, msgs = data.messages || [];
-  VERSION = conv.state_version;
-  const held = conv.state === 'ADMIN_ACTIVE';
-  const mine = !conv.bot_paused_by || conv.bot_paused_by === (ME && ME.admin_id);
-  const canReply = held && mine;
-
-  const bubbles = msgs.map((m) => {
-    const out = m.direction === 'out';
-    const who = m.sender_type === 'admin' ? (m.sender_admin_id || 'Petugas')
-              : m.sender_type === 'bot' ? 'Bot' : 'Warga';
-    const time = m.created_at
-      ? new Date(m.created_at).toLocaleTimeString('id-ID', { hour: '2-digit', minute: '2-digit' }) : '';
-    return '<div class="bubble ' + (out ? 'out' : 'in') + (m.sender_type === 'bot' ? ' by-bot' : '') + '">' +
-      '<div class="meta">' + esc(who) + (time ? ' · ' + esc(time) : '') + '</div>' +
-      '<div class="body-text">' + esc(m.body) + '</div></div>';
-  }).join('');
-
-  $('thread').classList.remove('hidden');
-  $('thread').innerHTML =
-    '<div class="thread-head">' +
-      '<button class="btn ghost" id="back_btn">Kembali</button>' +
-      '<h2>' + esc(conv.display_name || conv.conversation_id || id) + '</h2>' +
-      '<span class="pill ' + esc(conv.state) + '">' + esc(stateLabel(conv.state)) + '</span>' +
-      (conv.bot_paused_by ? '<span class="who">dipegang <b>' + esc(conv.bot_paused_by) + '</b></span>' : '') +
-      '<div class="spacer"></div>' +
-      (held
-        ? '<button class="btn ghost" id="act_btn" data-dir="off"' + (mine ? '' : ' disabled') + '>Kembalikan ke bot</button>'
-        : '<button class="btn take" id="act_btn" data-dir="on">Ambil alih</button>') +
-    '</div>' +
-    '<div class="msgs" id="msgs">' + (bubbles || '<div class="empty">Belum ada pesan.</div>') + '</div>' +
-    '<div class="composer">' +
-      '<textarea id="reply" placeholder="' +
-        (canReply ? 'Tulis balasan…' : 'Ambil alih dulu untuk membalas.') + '"' +
-        (canReply ? '' : ' disabled') + '></textarea>' +
-      '<div class="composer-foot"><span class="hint">' +
-        (canReply ? 'Bot diam sampai Anda kembalikan.'
-                  : held ? 'Percakapan ini sedang dipegang petugas lain.'
-                         : 'Mengambil alih akan mendiamkan bot di percakapan ini.') +
-      '</span><button class="btn" id="send_btn"' + (canReply ? '' : ' disabled') + '>Kirim</button></div>' +
-    '</div>';
-
-  $('back_btn').style.display = window.innerWidth <= 860 ? '' : 'none';
-  const box = $('msgs'); if (box) box.scrollTop = box.scrollHeight;
-  renderQueue();
-}
-
-function closeThread() { ACTIVE = null; $('thread').classList.add('hidden'); renderQueue(); }
-
-async function toggleHandover(dir) {
-  const btn = $('act_btn'); if (btn) btn.disabled = true;
-  const id = ACTIVE;
-  try {
-    await api('POST', '/conversations/' + encodeURIComponent(id) + '/handover/' + dir,
-              { expected_version: VERSION });
-    toast(dir === 'on' ? 'Diambil alih' : 'Dikembalikan ke bot');
-  } catch (e) {
-    // 409 berarti petugas lain bergerak lebih dulu. Muat ulang keadaan
-    // sebenarnya, jangan memaksa — dan katakan apa yang terjadi.
-    toast(e.message);
-  }
-  await refresh();
-  if (ACTIVE === id) await openThread(id);
-}
-
-async function sendReply() {
-  const box = $('reply'), btn = $('send_btn');
-  const body = box.value.trim();
-  if (!body) return;
-  btn.disabled = true; box.disabled = true;
-  const id = ACTIVE;
-  try {
-    await api('POST', '/conversations/' + encodeURIComponent(id) + '/messages',
-              { body: body, expected_version: VERSION, client_request_id: uuid() });
-    box.value = '';
-    toast('Terkirim');
-    await openThread(id);
-  } catch (e) {
-    toast(e.message);
-    btn.disabled = false; box.disabled = false;
-  }
-}
-
-let LAST_OK = Date.now();
-
-async function refresh() {
-  let ok = true;
-  try { CONVOS = await api('GET', '/conversations'); renderQueue(); }
-  catch (e) { ok = false; }
-  try {
-    const st = await api('GET', '/status/whatsapp');
-    const good = st.status === 'NORMAL';
-    const bad = st.status === 'TERPUTUS' || st.status === 'BERMASALAH';
-    $('conn_dot').className = 'dot ' + (good ? 'ok' : bad ? 'bad' : '');
-    $('conn_text').textContent = 'WhatsApp ' + String(st.status || '—').toLowerCase() +
-      (st.bot_globally_enabled === false ? ' · bot dimatikan' : '');
-  } catch (e) { ok = false; }
-  if (ok) LAST_OK = Date.now();
   showFreshness();
 }
 
-/* Papan triase yang membeku HARUS terlihat membeku. Kalau tidak, jaringan
-   putus terlihat persis sama dengan "tidak ada yang menunggu" — dan itu
-   kegagalan paling berbahaya di antarmuka ini. Polling dipertahankan
-   (bukan SSE) justru karena polling pulih sendiri; aliran SSE yang mati
-   diam-diam meninggalkan papan basi tanpa gejala apa pun. */
-function showFreshness() {
-  const age = Math.floor((Date.now() - LAST_OK) / 1000);
-  const el = $('conn_text');
-  if (age > 20) {
-    el.textContent = 'Data ' + age + ' detik lalu — periksa koneksi';
-    el.classList.add('stale');
-    $('conn_dot').className = 'dot bad';
-  } else {
-    el.classList.remove('stale');
+function renderThread(conv, messages) {
+  VERSION = Number(conv.state_version || 0);
+  const held = conv.state === 'ADMIN_ACTIVE';
+  const mine = !conv.bot_paused_by || conv.bot_paused_by === (ME && ME.admin_id);
+  const canReply = held && mine;
+  const action = held
+    ? '<button class="btn compact" id="handover_btn" data-direction="off"' + (mine ? '' : ' disabled') + '>Kembalikan ke bot</button>'
+    : '<button class="btn accent compact" id="handover_btn" data-direction="on">Ambil alih</button>';
+  $('thread_header').innerHTML = '<button class="mobile-back" id="mobile_back" aria-label="Kembali">' + icon('arrow-left') + '</button>' +
+    '<span class="thread-avatar">' + esc(initials(displayId(conv))) + '</span><span class="thread-identity"><h2>' + esc(displayId(conv) || conv.conversation_id) + '</h2><p>' + esc(String(conv.conversation_id || '')) + '</p></span>' +
+    '<span class="badge ' + esc(conv.state) + '">' + esc(stateLabel(conv.state)) + '</span><span class="thread-spacer"></span><span class="thread-actions">' + action + '</span>';
+  $('messages').innerHTML = messages.length ? messages.map((m) => {
+    const outbound = m.direction === 'out';
+    const byBot = m.sender_type === 'bot';
+    const who = m.sender_type === 'admin' ? (m.sender_admin_id || 'Petugas') : byBot ? 'Bot MARAWA' : 'Warga';
+    return '<article class="message ' + (outbound ? 'out' : 'in') + (byBot ? ' by-bot' : '') + '"><div class="message-meta"><span>' + esc(who) + '</span><span>·</span><time>' + esc(formatClock(m.created_at)) + '</time></div><div class="message-bubble">' + esc(m.body || '') + '</div></article>';
+  }).join('') : '<div class="empty-state"><strong>Belum ada pesan</strong>Riwayat pesan akan tampil di sini.</div>';
+  const placeholder = canReply ? 'Tulis balasan untuk warga…' : held ? 'Percakapan sedang dipegang petugas lain' : 'Ambil alih untuk mulai membalas';
+  const hint = canReply ? 'Bot tetap diam sampai percakapan dikembalikan.' : held ? 'Hanya petugas pemegang yang dapat membalas.' : 'Mengambil alih akan menghentikan balasan otomatis bot.';
+  $('composer_wrap').innerHTML = '<div class="composer"><label class="sr-only" for="reply">Balasan</label><textarea id="reply" rows="1" placeholder="' + esc(placeholder) + '"' + (canReply ? '' : ' disabled') + '></textarea><button class="send-btn" id="send_btn" aria-label="Kirim balasan"' + (canReply ? '' : ' disabled') + '>' + icon('send') + '</button></div><div class="composer-hint">' + esc(hint) + '</div>';
+  $('conversation_empty').classList.add('hidden');
+  $('conversation_view').classList.remove('hidden');
+  $('conversation_pane').classList.remove('is-empty-mobile');
+  const box = $('messages'); box.scrollTop = box.scrollHeight;
+  const reply = $('reply');
+  if (reply) reply.addEventListener('input', () => { reply.style.height = 'auto'; reply.style.height = Math.min(reply.scrollHeight, 160) + 'px'; });
+}
+
+async function openThread(id, quiet) {
+  ACTIVE = id;
+  renderQueue();
+  let data;
+  try { data = await api('GET', '/conversations/' + encodeURIComponent(id)); }
+  catch (error) { if (!quiet) toast(error.message); return; }
+  renderThread(data.conversation || {}, data.messages || []);
+}
+function closeThread() {
+  ACTIVE = null;
+  PENDING_REQUEST_ID = null;
+  PENDING_BODY = '';
+  $('conversation_view').classList.add('hidden');
+  $('conversation_empty').classList.remove('hidden');
+  $('conversation_pane').classList.add('is-empty-mobile');
+  renderQueue();
+}
+
+async function toggleHandover(direction) {
+  if (!ACTIVE) return;
+  if (direction === 'on' && !window.confirm('Ambil alih percakapan ini? Bot akan berhenti membalas sampai Anda mengembalikannya.')) return;
+  const button = $('handover_btn'); if (button) button.disabled = true;
+  const id = ACTIVE;
+  try {
+    await api('POST', '/conversations/' + encodeURIComponent(id) + '/handover/' + direction, { expected_version: VERSION });
+    toast(direction === 'on' ? 'Percakapan diambil alih' : 'Percakapan dikembalikan ke bot');
+  } catch (error) {
+    toast(error.status === 409 ? 'Status berubah karena tindakan petugas lain. Memuat ulang…' : error.message);
+  }
+  await refresh();
+  if (ACTIVE === id) await openThread(id, true);
+}
+
+async function sendReply() {
+  const field = $('reply'); const button = $('send_btn');
+  if (!field || !button || !ACTIVE) return;
+  const body = field.value.trim(); if (!body) return;
+  if (!PENDING_REQUEST_ID || PENDING_BODY !== body) { PENDING_REQUEST_ID = uuid(); PENDING_BODY = body; }
+  button.disabled = true; field.disabled = true;
+  const id = ACTIVE;
+  try {
+    await api('POST', '/conversations/' + encodeURIComponent(id) + '/messages', { body, expected_version: VERSION, client_request_id: PENDING_REQUEST_ID });
+    PENDING_REQUEST_ID = null; PENDING_BODY = ''; field.value = ''; toast('Balasan masuk antrean kirim');
+    await openThread(id, true);
+  } catch (error) {
+    toast(error.message); button.disabled = false; field.disabled = false; field.focus();
   }
 }
 
-/* ── Tab ── */
+function showFreshness() {
+  const seconds = Math.floor((Date.now() - LAST_OK) / 1000);
+  if (seconds > 20) {
+    $('conn_text').textContent = 'Data ' + seconds + ' detik lalu';
+    $('conn_text').classList.add('stale');
+    $('conn_dot').className = 'connection-dot bad';
+  } else $('conn_text').classList.remove('stale');
+}
+
+async function refresh() {
+  let okay = true;
+  try { CONVOS = await api('GET', '/conversations'); renderQueue(); }
+  catch (error) { okay = false; }
+  try {
+    const status = await api('GET', '/status/whatsapp');
+    BOT_ENABLED = status.bot_globally_enabled !== false;
+    const good = status.status === 'NORMAL' || status.connected === true;
+    const bad = status.status === 'TERPUTUS' || status.status === 'BERMASALAH';
+    $('conn_dot').className = 'connection-dot ' + (good ? 'ok' : bad ? 'bad' : '');
+    $('conn_text').textContent = 'WhatsApp ' + String(status.status || (status.connected ? 'terhubung' : 'memeriksa')).toLowerCase() + (BOT_ENABLED ? '' : ' · bot dimatikan');
+  } catch (error) { okay = false; }
+  if (okay) LAST_OK = Date.now();
+  showFreshness();
+}
+
 function showTab(name) {
-  document.querySelectorAll('.tab').forEach((t) => t.classList.toggle('is-on', t.dataset.tab === name));
-  $('app_view').classList.toggle('hidden', name !== 'inbox');
+  document.querySelectorAll('[data-tab]').forEach((node) => {
+    const active = node.dataset.tab === name;
+    node.classList.toggle('is-active', active);
+    if (active) node.setAttribute('aria-current','page'); else node.removeAttribute('aria-current');
+  });
+  $('inbox_view').classList.toggle('hidden', name !== 'inbox');
   $('settings_view').classList.toggle('hidden', name !== 'settings');
   $('audit_view').classList.toggle('hidden', name !== 'audit');
   if (name === 'settings') loadSettings();
   if (name === 'audit') loadAudit();
 }
 
-/* ── Setelan ── */
 const SETTING_META = {
-  citizen_idle_minutes:        ['Sesi warga berakhir setelah', 2, 30, 'Percakapan yang dijawab bot ditutup setelah sekian menit tanpa pesan.'],
-  queue_expiry_minutes:        ['Antrean kedaluwarsa setelah', 30, 1440, 'Warga yang meminta petugas tetap menunggu selama ini sebelum dianggap batal. Sengaja jauh lebih panjang daripada sesi biasa — mereka menunggu kita, bukan sedang diam.'],
-  handover_auto_revert_minutes:['Bot kembali otomatis setelah', 5, 480, 'Kalau petugas mengambil alih lalu lupa mengembalikan, bot menyala lagi supaya warga tidak terlantar.'],
-  queue_notify_repeat_minutes: ['Ulangi notifikasi tiap', 1, 30, 'Jeda minimum antar pemberitahuan untuk satu percakapan yang sama.'],
+  citizen_idle_minutes: ['Sesi warga berakhir setelah', 2, 30, 'Menit tanpa pesan sebelum sesi bot ditutup.'],
+  queue_expiry_minutes: ['Antrean kedaluwarsa setelah', 30, 1440, 'Batas waktu warga menunggu petugas.'],
+  handover_auto_revert_minutes: ['Bot kembali otomatis setelah', 5, 480, 'Mencegah percakapan tertahan saat petugas lupa melepas.'],
+  queue_notify_repeat_minutes: ['Ulangi notifikasi setiap', 1, 30, 'Jeda minimum notifikasi untuk percakapan yang sama.'],
 };
 
 async function loadSettings() {
-  const v = $('settings_view');
-  v.innerHTML = '<h2>Setelan</h2><p class="lede">Memuat…</p>';
+  const view = $('settings_view');
+  view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Setelan</h1><p>Memuat konfigurasi operasional…</p></div></div>';
   try {
-    const [timeouts, agent] = await Promise.all([
-      api('GET', '/settings/timeouts'),
-      api('GET', '/settings/agent'),
-    ]);
-    let rows = '';
-    for (const [key, meta] of Object.entries(SETTING_META)) {
-      const [label, lo, hi, note] = meta;
-      const val = timeouts[key];
-      if (val === undefined) continue;
-      rows += '<div class="setting"><span class="name">' + esc(label) + '</span>' +
-        '<input type="number" min="' + lo + '" max="' + hi + '" value="' + esc(String(val)) +
-        '" data-key="' + esc(key) + '">' +
-        '<span class="note">' + esc(note) + ' Rentang ' + lo + '–' + hi + ' menit.</span></div>';
-    }
-    v.innerHTML =
-      '<h2>Setelan</h2>' +
-      '<p class="lede">Nilai di luar rentang ditolak server, bukan hanya formulir.</p>' +
-      '<div class="panel"><h3 style="margin:0 0 4px;font-family:var(--cond);letter-spacing:.04em">WhatsApp</h3>' +
-        '<p class="lede" style="margin-bottom:10px" id="wa_status">Memeriksa koneksi…</p>' +
-        '<img id="wa_qr" alt="QR pairing" style="display:none;width:220px;height:220px;image-rendering:pixelated;border:1px solid var(--rule);border-radius:8px;background:#fff">' +
-        '<div style="margin-top:10px"><button class="btn ghost" id="wa_refresh">Muat ulang QR</button></div>' +
-      '</div>' +
-      '<div class="panel">' + rows +
-        '<div style="margin-top:16px;display:flex;gap:10px;align-items:center">' +
-        '<button class="btn" id="save_settings">Simpan perubahan</button>' +
-        '<span class="hint" id="settings_hint"></span></div>' +
-      '</div>' +
-      '<div class="panel"><h3 style="margin:0 0 4px;font-family:var(--cond);letter-spacing:.04em">Nomor petugas</h3>' +
-        '<p class="lede" style="margin-bottom:14px">Bot mengirim pemberitahuan ke nomor-nomor ini saat ada warga menunggu. ' +
-        'Nomor yang terdaftar di sini tidak dilayani bot — balasan Anda ke pemberitahuan tidak akan dijawab.</p>' +
-        '<div id="contacts_list"></div>' +
-        '<div class="contact-add">' +
-          '<input id="ct_phone" placeholder="08123456789" inputmode="tel">' +
-          '<input id="ct_label" placeholder="Nama petugas">' +
-          '<button class="btn" id="add_contact">Tambah</button>' +
-        '</div>' +
-      '</div>' +
-      '<div class="panel"><h3 style="margin:0 0 10px;font-family:var(--cond);letter-spacing:.04em">Agent</h3>' +
-        '<p class="lede" style="margin-bottom:14px">' + esc(agent.note || '') + '</p>' +
-        '<div class="locked"><b>Tidak dapat diubah dari sini, selamanya.</b>' +
-        '<ul>' + (agent.never_editable || []).map((x) => '<li>' + esc(x) + '</li>').join('') + '</ul>' +
-        'Pemeriksaan kebenaran jawaban hidup di kode dan hanya berubah lewat rilis. ' +
-        'Tombol yang bisa mematikannya, cepat atau lambat, akan ditekan saat bot terasa kurang membantu.' +
-        '</div></div>';
-    loadWhatsApp();
-    loadContacts();
-  } catch (e) {
-    v.innerHTML = '<h2>Setelan</h2><div class="alert">' + esc(e.message) + '</div>';
-  }
+    const [timeouts, agent] = await Promise.all([api('GET','/settings/timeouts'), api('GET','/settings/agent')]);
+    const settingsRows = Object.entries(SETTING_META).filter(([key]) => timeouts[key] !== undefined).map(([key, meta]) => {
+      const [label, min, max, note] = meta;
+      return '<div class="setting-row"><div class="setting-name"><strong>' + esc(label) + '</strong><span>' + esc(note) + ' Rentang ' + min + '–' + max + ' menit.</span></div><input class="setting-input" type="number" min="' + min + '" max="' + max + '" value="' + esc(timeouts[key]) + '" data-key="' + esc(key) + '"></div>';
+    }).join('');
+    view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Setelan</h1><p>Konfigurasi kanal, layanan, dan petugas.</p></div>' +
+      '<section class="settings-section"><div class="section-label"><h2>WhatsApp</h2><p>Status koneksi dan pairing akun layanan.</p></div><div class="section-body"><div class="status-row"><span class="connection-dot" id="wa_dot"></span><div class="status-copy"><strong id="wa_status_title">Memeriksa koneksi…</strong><span id="wa_status_detail">Mohon tunggu</span></div><button class="btn compact" id="wa_refresh">' + icon('refresh') + 'Muat ulang</button></div><div class="qr-box hidden" id="qr_box"><img id="wa_qr" alt="QR pairing WhatsApp"></div></div></section>' +
+      '<section class="settings-section"><div class="section-label"><h2>Bot layanan</h2><p>Kontrol global untuk semua balasan otomatis.</p></div><div class="section-body"><div class="bot-switch"><span class="connection-dot ' + (BOT_ENABLED ? 'ok' : 'bad') + '"></span><div class="status-copy"><strong>' + (BOT_ENABLED ? 'Bot aktif' : 'Bot dimatikan') + '</strong><span>' + (BOT_ENABLED ? 'Layanan otomatis berjalan normal.' : 'Tidak ada balasan otomatis ke warga.') + '</span></div><button class="btn compact ' + (BOT_ENABLED ? 'danger-quiet' : 'accent') + '" id="bot_switch" data-enabled="' + (BOT_ENABLED ? 'false' : 'true') + '">' + (BOT_ENABLED ? 'Matikan bot' : 'Aktifkan bot') + '</button></div></div></section>' +
+      '<section class="settings-section"><div class="section-label"><h2>Waktu layanan</h2><p>Atur batas sesi, antrean, dan notifikasi.</p></div><div class="section-body">' + settingsRows + '<div class="settings-actions"><button class="btn primary" id="save_settings">Simpan perubahan</button><span id="settings_hint" class="queue-summary"></span></div></div></section>' +
+      '<section class="settings-section"><div class="section-label"><h2>Nomor petugas</h2><p>Penerima notifikasi saat warga masuk antrean.</p></div><div class="section-body"><div class="contact-list" id="contacts_list"><div class="skeleton" style="height:48px"></div></div><div class="contact-add"><input class="input" id="contact_phone" placeholder="08123456789" inputmode="tel"><input class="input" id="contact_label" placeholder="Nama petugas"><button class="btn" id="add_contact">Tambah</button></div></div></section>' +
+      '<section class="settings-section"><div class="section-label"><h2>Guard agent</h2><p>Kebijakan kebenaran yang tidak bisa diubah dari UI.</p></div><div class="section-body"><div class="readonly-note"><strong>Terkunci di kode.</strong> ' + esc(agent.note || '') + '<br><br>' + (agent.never_editable || []).map((item) => '<code>' + esc(item) + '</code>').join(' · ') + '</div></div></section></div>';
+    await Promise.all([loadWhatsApp(), loadContacts()]);
+  } catch (error) { view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Setelan</h1></div><div class="error-box">' + esc(error.message) + '</div></div>'; }
 }
 
 async function loadWhatsApp() {
-  const statusEl = $('wa_status'), img = $('wa_qr');
-  const refreshBtn = $('wa_refresh');
-  if (!statusEl) return;
-  if (refreshBtn) refreshBtn.onclick = loadWhatsApp;
+  const title = $('wa_status_title'); if (!title) return;
+  const detail = $('wa_status_detail'); const dot = $('wa_dot'); const qrBox = $('qr_box'); const image = $('wa_qr');
   try {
-    const s = await api('GET', '/settings/whatsapp');
-    if (s.connected) {
-      statusEl.textContent = 'Terhubung ke WhatsApp. Bot siap melayani warga.';
-      statusEl.style.color = 'var(--bot)';
-      if (img) img.style.display = 'none';
-      return;
-    }
-    statusEl.textContent = 'Belum terhubung. Pindai QR dengan WhatsApp yang dipakai bot:';
-    statusEl.style.color = 'var(--waiting)';
-    if (img && s.qr) {
-      const png = await apiBlob('/settings/whatsapp-qr.png');
-      img.src = URL.createObjectURL(png);
-      img.style.display = 'block';
-    }
-  } catch (e) {
-    statusEl.textContent = 'Tidak dapat memeriksa koneksi: ' + esc(e.message);
-    statusEl.style.color = 'var(--waiting)';
-  }
+    const status = await api('GET','/settings/whatsapp');
+    dot.className = 'connection-dot ' + (status.connected ? 'ok' : 'bad');
+    title.textContent = status.connected ? 'WhatsApp terhubung' : 'Belum terhubung';
+    detail.textContent = status.connected ? 'Akun layanan siap menerima pesan.' : status.qr ? 'Pindai QR di bawah dengan WhatsApp akun bot.' : 'QR belum tersedia. Coba muat ulang.';
+    qrBox.classList.toggle('hidden', status.connected || !status.qr);
+    if (!status.connected && status.qr) { const blob = await apiBlob('/settings/whatsapp-qr.png'); image.src = URL.createObjectURL(blob); }
+  } catch (error) { dot.className = 'connection-dot bad'; title.textContent = 'Status tidak tersedia'; detail.textContent = error.message; }
 }
 
 async function loadContacts() {
-  const box = $('contacts_list');
-  if (!box) return;
+  const box = $('contacts_list'); if (!box) return;
   try {
-    const rows = await api('GET', '/settings/admin-contacts');
-    box.innerHTML = rows.length
-      ? rows.map((c) =>
-          '<div class="contact"><span class="num">' + esc(c.display || c.phone_e164) + '</span>' +
-          '<span class="lbl">' + esc(c.label) + '</span>' +
-          (c.notify ? '' : '<span class="off">notifikasi mati</span>') +
-          '<button class="btn ghost" data-del="' + esc(String(c.contact_id)) + '">Hapus</button></div>'
-        ).join('')
-      : '<div class="empty">Belum ada nomor. Tanpa ini, pemberitahuan tidak sampai ke siapa pun ' +
-        'dan petugas hanya tahu ada yang menunggu bila kebetulan membuka panel.</div>';
-  } catch (e) {
-    box.innerHTML = '<div class="alert">' + esc(e.message) + '</div>';
-  }
+    const rows = await api('GET','/settings/admin-contacts');
+    box.innerHTML = rows.length ? rows.map((c) => '<div class="contact-row"><span class="contact-phone">' + esc(c.display || c.phone_e164) + '</span><span class="contact-label">' + esc(c.label || 'Tanpa nama') + (c.notify ? '' : ' <span class="contact-off">· notifikasi mati</span>') + '</span><button class="btn compact danger-quiet" data-delete-contact="' + esc(c.contact_id) + '">Hapus</button></div>').join('') : '<div class="empty-state"><strong>Belum ada nomor petugas</strong>Tambahkan minimal satu nomor agar notifikasi antrean terkirim.</div>';
+  } catch (error) { box.innerHTML = '<div class="error-box">' + esc(error.message) + '</div>'; }
 }
-
 async function addContact() {
-  const phone = $('ct_phone').value.trim(), label = $('ct_label').value.trim();
-  if (!phone || !label) { toast('Isi nomor dan namanya'); return; }
-  try {
-    const res = await api('POST', '/settings/admin-contacts', { phone: phone, label: label });
-    $('ct_phone').value = ''; $('ct_label').value = '';
-    toast('Ditambahkan: ' + res.display);
-    await loadContacts();
-  } catch (e) { toast(e.message); }
+  const phone = $('contact_phone').value.trim(); const label = $('contact_label').value.trim();
+  if (!phone || !label) { toast('Isi nomor dan nama petugas'); return; }
+  try { await api('POST','/settings/admin-contacts',{ phone, label, notify:true }); $('contact_phone').value=''; $('contact_label').value=''; toast('Nomor petugas ditambahkan'); await loadContacts(); }
+  catch (error) { toast(error.message); }
 }
-
-async function removeContact(id) {
-  try {
-    await api('DELETE', '/settings/admin-contacts/' + encodeURIComponent(id));
-    toast('Nomor dihapus');
-    await loadContacts();
-  } catch (e) { toast(e.message); }
-}
-
+async function removeContact(id) { try { await api('DELETE','/settings/admin-contacts/' + encodeURIComponent(id)); toast('Nomor petugas dihapus'); await loadContacts(); } catch (error) { toast(error.message); } }
 async function saveSettings() {
-  const values = {};
-  let bad = null;
-  document.querySelectorAll('#settings_view input[data-key]').forEach((el) => {
-    const n = Number(el.value);
-    if (!Number.isInteger(n) || n < Number(el.min) || n > Number(el.max)) bad = el;
-    values[el.dataset.key] = n;
-  });
-  if (bad) { bad.focus(); toast('Ada nilai di luar rentang'); return; }
-  try {
-    await api('PUT', '/settings/timeouts', { values: values });
-    toast('Setelan disimpan');
-  } catch (e) { toast(e.message); }
+  const values = {}; let invalid = null;
+  document.querySelectorAll('#settings_view [data-key]').forEach((input) => { const n = Number(input.value); if (!Number.isInteger(n) || n < Number(input.min) || n > Number(input.max)) invalid = input; values[input.dataset.key] = n; });
+  if (invalid) { invalid.focus(); toast('Ada nilai di luar rentang'); return; }
+  try { await api('PUT','/settings/timeouts',{ values }); toast('Setelan disimpan'); }
+  catch (error) { toast(error.message); }
+}
+async function toggleBot(enabled) {
+  const intent = enabled ? 'mengaktifkan' : 'mematikan';
+  if (!window.confirm('Yakin ingin ' + intent + ' bot untuk semua percakapan?')) return;
+  try { await api('POST','/settings/bot-global-switch?enabled=' + encodeURIComponent(enabled) + '&reason=' + encodeURIComponent('Diubah dari dashboard oleh ' + ME.admin_id)); BOT_ENABLED = enabled; toast(enabled ? 'Bot diaktifkan' : 'Bot dimatikan'); await refresh(); await loadSettings(); }
+  catch (error) { toast(error.message); }
 }
 
-/* ── Riwayat (audit log) ── */
 async function loadAudit() {
-  const v = $('audit_view');
-  v.innerHTML = '<h2>Riwayat</h2><p class="lede">Memuat…</p>';
+  const view = $('audit_view');
+  view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Riwayat</h1><p>Memuat catatan audit…</p></div></div>';
   try {
-    const rows = await api('GET', '/audit-log');
-    const body = (rows || []).map((r) => {
-      const when = r.at ? new Date(r.at).toLocaleString('id-ID',
-        { day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit' }) : '';
-      let detail = '';
-      try { detail = r.detail && Object.keys(r.detail).length ? JSON.stringify(r.detail) : ''; }
-      catch (err) { detail = ''; }
-      return '<tr><td class="when">' + esc(when) + '</td>' +
-        '<td class="act">' + esc(r.action) + '</td>' +
-        '<td class="who-col">' + esc(r.admin_id || '—') + '</td>' +
-        '<td class="who-col">' + esc(r.conversation_id || '—') + '</td>' +
-        '<td class="detail">' + esc(detail) + '</td></tr>';
-    }).join('');
-    v.innerHTML =
-      '<h2>Riwayat</h2>' +
-      '<p class="lede">Catatan permanen. Tidak dapat dihapus atau diubah oleh siapa pun, ' +
-      'termasuk superadmin — catatan yang bisa disunting tidak menjawab apa pun.</p>' +
-      '<div class="panel">' +
-      (body
-        ? '<table class="log"><thead><tr><th>Waktu</th><th>Tindakan</th><th>Petugas</th>' +
-          '<th>Percakapan</th><th>Rincian</th></tr></thead><tbody>' + body + '</tbody></table>'
-        : '<div class="empty">Belum ada tindakan tercatat.</div>') +
-      '</div>';
-  } catch (e) {
-    v.innerHTML = '<h2>Riwayat</h2><div class="alert">' + esc(e.message) + '</div>';
-  }
+    const rows = await api('GET','/audit-log');
+    const body = rows.map((row) => { let detail=''; try { detail = row.detail && Object.keys(row.detail).length ? JSON.stringify(row.detail) : ''; } catch (e) {} return '<tr><td class="mono">' + esc(formatDateTime(row.at)) + '</td><td><strong>' + esc(row.action || '—') + '</strong></td><td class="mono">' + esc(row.admin_id || 'sistem') + '</td><td class="mono">' + esc(row.conversation_id || '—') + '</td><td class="mono audit-detail">' + esc(detail) + '</td></tr>'; }).join('');
+    view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Riwayat</h1><p>Catatan permanen tindakan petugas dan perubahan sistem.</p></div><div class="audit-shell">' + (body ? '<table class="audit-table"><thead><tr><th>Waktu</th><th>Tindakan</th><th>Petugas</th><th>Percakapan</th><th>Rincian</th></tr></thead><tbody>' + body + '</tbody></table>' : '<div class="empty-state"><strong>Belum ada catatan</strong>Tindakan petugas akan muncul di sini.</div>') + '</div></div>';
+  } catch (error) { view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Riwayat</h1></div><div class="error-box">' + esc(error.message) + '</div></div>'; }
 }
 
 async function boot() {
-  try { ME = await api('GET', '/admin/session'); }
-  catch (e) { return showLogin(); }
-  $('login_view').classList.add('hidden');
-  $('app_view').classList.remove('hidden');
-  $('who').classList.remove('hidden');
-  $('logout_btn').classList.remove('hidden');
-  $('who').innerHTML = '<b>' + esc(ME.admin_id) + '</b> · ' + esc(ME.role);
-  $('tabs').classList.remove('hidden');
-  if (ME.role === 'superadmin') {
-    $('tab_settings').classList.remove('hidden');
-    $('tab_audit').classList.remove('hidden');
-  }
-  showTab('inbox');
-  await refresh();
-  clearInterval(pollTimer); clearInterval(tickTimer);
-  pollTimer = setInterval(refresh, 5000);
-  tickTimer = setInterval(tickTimers, 1000);
+  try { ME = await api('GET','/admin/session'); }
+  catch (error) { showLogin(); return; }
+  $('login_screen').classList.add('hidden'); $('app_shell').classList.remove('hidden');
+  $('user_name').textContent = ME.admin_id; $('user_role').textContent = ME.role; $('user_avatar').textContent = initials(ME.admin_id);
+  const superadmin = ME.role === 'superadmin'; $('nav_settings').classList.toggle('hidden', !superadmin); $('nav_audit').classList.toggle('hidden', !superadmin);
+  showTab('inbox'); await refresh();
+  clearInterval(POLL_TIMER); clearInterval(TICK_TIMER);
+  POLL_TIMER = setInterval(refresh, 5000); TICK_TIMER = setInterval(tickTimers, 1000);
 }
+function showLogin() { $('login_screen').classList.remove('hidden'); $('app_shell').classList.add('hidden'); setTimeout(() => $('admin_id').focus(),0); }
+function logout() { TOKEN=''; ME=null; ACTIVE=null; CONVOS=[]; sessionStorage.removeItem('marawa_token'); clearInterval(POLL_TIMER); clearInterval(TICK_TIMER); closeThread(); showLogin(); }
 
-function showLogin() {
-  $('login_view').classList.remove('hidden');
-  $('app_view').classList.add('hidden');
-  $('who').classList.add('hidden');
-  $('logout_btn').classList.add('hidden');
-  $('admin_id').focus();
-}
-
-function logout() {
-  TOKEN = ''; ME = null; ACTIVE = null; CONVOS = [];
-  sessionStorage.removeItem('marawa_token');
-  clearInterval(pollTimer); clearInterval(tickTimer);
-  $('thread').classList.add('hidden');
-  $('tabs').classList.add('hidden');
-  $('tab_settings').classList.add('hidden');
-  $('tab_audit').classList.add('hidden');
-  $('settings_view').classList.add('hidden');
-  $('audit_view').classList.add('hidden');
-  showLogin();
-}
-
-/* Delegasi event: daftar digambar ulang tiap 5 detik, jadi handler
-   inline akan hilang bersama simpulnya. */
-document.addEventListener('click', (ev) => {
-  const open = ev.target.closest('[data-open]');
-  if (open) { openThread(open.getAttribute('data-open')); return; }
-  if (ev.target.closest('#back_btn')) { closeThread(); return; }
-  const act = ev.target.closest('#act_btn');
-  if (act) { toggleHandover(act.getAttribute('data-dir')); return; }
-  if (ev.target.closest('#send_btn')) { sendReply(); return; }
-  const tab = ev.target.closest('.tab');
-  if (tab) { showTab(tab.dataset.tab); return; }
-  if (ev.target.closest('#save_settings')) { saveSettings(); return; }
-  if (ev.target.closest('#add_contact')) { addContact(); return; }
-  const del = ev.target.closest('[data-del]');
-  if (del) { removeContact(del.getAttribute('data-del')); return; }
-  if (ev.target.closest('#logout_btn')) { logout(); }
+/* One delegated listener survives every server-rendered fragment refresh. */
+document.addEventListener('click', (event) => {
+  const open = event.target.closest('[data-open]'); if (open) { openThread(open.dataset.open); return; }
+  const tab = event.target.closest('[data-tab]'); if (tab) { showTab(tab.dataset.tab); return; }
+  const filter = event.target.closest('[data-filter]'); if (filter) { ACTIVE_FILTER = filter.dataset.filter; document.querySelectorAll('[data-filter]').forEach((n) => n.classList.toggle('is-active', n === filter)); renderQueue(); return; }
+  const handover = event.target.closest('#handover_btn'); if (handover) { toggleHandover(handover.dataset.direction); return; }
+  if (event.target.closest('#send_btn')) { sendReply(); return; }
+  if (event.target.closest('#mobile_back')) { closeThread(); return; }
+  if (event.target.closest('#logout_btn')) { logout(); return; }
+  if (event.target.closest('#search_clear')) { $('queue_search').value=''; SEARCH_QUERY=''; $('search_clear').classList.add('hidden'); renderQueue(); return; }
+  if (event.target.closest('#wa_refresh')) { loadWhatsApp(); return; }
+  if (event.target.closest('#save_settings')) { saveSettings(); return; }
+  if (event.target.closest('#add_contact')) { addContact(); return; }
+  const del = event.target.closest('[data-delete-contact]'); if (del) { removeContact(del.dataset.deleteContact); return; }
+  const botSwitch = event.target.closest('#bot_switch'); if (botSwitch) { toggleBot(botSwitch.dataset.enabled === 'true'); }
 });
-
-document.addEventListener('keydown', (ev) => {
-  if (ev.key === 'Escape' && ACTIVE) closeThread();
-  if (ev.key === 'Enter' && (ev.metaKey || ev.ctrlKey) && ACTIVE && $('reply') && !$('reply').disabled) {
-    sendReply();
-  }
+$('queue_search').addEventListener('input', (event) => { SEARCH_QUERY = event.target.value.trim(); $('search_clear').classList.toggle('hidden', !SEARCH_QUERY); renderQueue(); });
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && ACTIVE) closeThread();
+  if (event.key === 'Enter' && (event.metaKey || event.ctrlKey) && ACTIVE && $('reply') && !$('reply').disabled) { event.preventDefault(); sendReply(); }
+  if (event.key === '/' && !$('app_shell').classList.contains('hidden') && !['INPUT','TEXTAREA'].includes(document.activeElement.tagName)) { event.preventDefault(); $('queue_search').focus(); }
 });
-
-$('login_form').addEventListener('submit', async (ev) => {
-  ev.preventDefault();
-  const err = $('login_err'), btn = $('login_btn');
-  err.classList.add('hidden'); btn.disabled = true; btn.textContent = 'Memeriksa…';
+$('login_form').addEventListener('submit', async (event) => {
+  event.preventDefault(); const errorBox=$('login_err'); const button=$('login_btn');
+  errorBox.classList.add('hidden'); button.disabled=true; button.textContent='Memeriksa…';
   try {
-    const res = await fetch(API + '/admin/login', {
-      method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        admin_id: $('admin_id').value.trim(),
-        password: $('password').value,
-        totp_code: $('totp').value.trim() || null,
-      }),
-    });
-    const data = await res.json().catch(() => ({}));
-    if (!res.ok) {
-      // 429 membawa Retry-After; sampaikan apa adanya agar petugas tahu
-      // harus menunggu, bukan mengira kodenya yang salah terus.
-      throw new Error(data.detail || 'Kode tidak diterima. Coba kode berikutnya.');
-    }
-    TOKEN = data.token;
-    sessionStorage.setItem('marawa_token', TOKEN);
-    $('totp').value = '';
-    await boot();
-  } catch (e) {
-    err.textContent = e.message; err.classList.remove('hidden');
-    $('totp').value = ''; $('totp').focus();
-  } finally {
-    btn.disabled = false; btn.textContent = 'Masuk';
-  }
+    const response = await fetch(API + '/admin/login', { method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify({ admin_id:$('admin_id').value.trim(), password:$('password').value, totp_code:$('totp').value.trim() || null }) });
+    const data = await response.json().catch(() => ({}));
+    if (!response.ok) { const wait=response.headers.get('Retry-After'); throw new Error(data.detail || (wait ? 'Terlalu banyak percobaan. Coba lagi dalam ' + wait + ' detik.' : 'Kredensial tidak valid.')); }
+    TOKEN=data.token; sessionStorage.setItem('marawa_token',TOKEN); $('password').value=''; $('totp').value=''; await boot();
+  } catch (error) { errorBox.textContent=error.message; errorBox.classList.remove('hidden'); $('password').focus(); }
+  finally { button.disabled=false; button.textContent='Masuk'; }
 });
 
 if (TOKEN) boot(); else showLogin();

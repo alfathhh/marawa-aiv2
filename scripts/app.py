@@ -97,6 +97,7 @@ class Store:
             "handover_auto_revert_minutes": 30,
             "queue_notify_repeat_minutes": 5,
         }
+        self.runtime_settings: dict[str, Any] = {}
         self.global_switch = GlobalBotSwitch()
         self.pairing_cutoff_ts: datetime | None = None
         self.audit_log: list[dict[str, Any]] = []
@@ -143,6 +144,131 @@ class Store:
         self.conversations[new_state.conversation_id] = new_state
         return True
 
+    def append_message(
+        self, conversation_id: str, direction: str, sender_type: str, body: str,
+        wa_message_id: str | None = None, sender_admin_id: str | None = None,
+    ) -> bool:
+        if wa_message_id and self.has_message_id(wa_message_id):
+            return False
+        self.messages.setdefault(conversation_id, []).append({
+            "direction": direction, "sender_type": sender_type,
+            "sender_admin_id": sender_admin_id, "body": body,
+            "wa_message_id": wa_message_id,
+            "created_at": datetime.now(timezone.utc).isoformat(),
+        })
+        return True
+
+    def has_message_id(self, wa_message_id: str) -> bool:
+        return any(
+            message.get("wa_message_id") == wa_message_id
+            for messages in self.messages.values() for message in messages
+        )
+
+    def persist_inbound_transition(
+        self, expected: ConversationState, new_state: ConversationState,
+        *, direction: str, sender_type: str, body: str,
+        wa_message_id: str, sender_admin_id: str | None = None,
+        cancel_bot_outbox: bool = False,
+    ) -> str:
+        with self.lock_for(expected.conversation_id):
+            if self.has_message_id(wa_message_id):
+                return "duplicate"
+            current = self.conversations.get(expected.conversation_id)
+            if (
+                current is None
+                or current.state_version != expected.state_version
+                or current.agent_run_active != expected.agent_run_active
+            ):
+                return "conflict"
+            self.conversations[expected.conversation_id] = new_state
+            self.messages.setdefault(expected.conversation_id, []).append({
+                "direction": direction, "sender_type": sender_type,
+                "sender_admin_id": sender_admin_id, "body": body,
+                "wa_message_id": wa_message_id,
+                "created_at": datetime.now(timezone.utc).isoformat(),
+            })
+            if cancel_bot_outbox:
+                self.cancel_pending_bot_outbox(
+                    expected.conversation_id, "handover_preempted"
+                )
+            return "persisted"
+
+    def enqueue_outbox(self, record: SendRecord) -> bool:
+        if record.idempotency_key and any(
+            item.idempotency_key == record.idempotency_key
+            for item in self.outbox.values()
+        ):
+            return False
+        self.outbox[record.outbox_id] = record
+        return True
+
+    def outbox_has_idempotency_key(self, key: str) -> bool:
+        return any(item.idempotency_key == key for item in self.outbox.values())
+
+    def persist_admin_reply(
+        self, expected_version: int, new_state: ConversationState,
+        record: SendRecord,
+    ) -> str:
+        if self.outbox_has_idempotency_key(record.idempotency_key or ""):
+            return "duplicate"
+        if not self.compare_and_set(expected_version, new_state):
+            return "conflict"
+        if not self.enqueue_outbox(record):
+            return "duplicate"
+        self.append_message(
+            record.conversation_id, "out", "admin", record.body,
+            sender_admin_id=record.sender_admin_id,
+        )
+        return "enqueued"
+
+    def cancel_pending_bot_outbox(self, conversation_id: str, reason: str) -> int:
+        count = 0
+        for record in self.outbox.values():
+            if (
+                record.conversation_id == conversation_id
+                and record.sender_type == "bot"
+                and record.status in (SendStatus.PENDING, SendStatus.CLAIMED)
+            ):
+                record.status = SendStatus.CANCELLED
+                record.last_error = reason
+                count += 1
+        return count
+
+    def mark_notified(
+        self, conversation_id: str, expected_version: int, at: datetime,
+    ) -> bool:
+        current = self.conversations.get(conversation_id)
+        if current is None or current.state_version != expected_version:
+            return False
+        self.conversations[conversation_id] = ConversationState(
+            **{**current.__dict__, "last_notified_at": at}
+        )
+        return True
+
+    def pending_outbox_count(self) -> int:
+        return sum(
+            1 for record in self.outbox.values()
+            if record.status in (SendStatus.PENDING, SendStatus.CLAIMED)
+        )
+
+    def conversations_needing_sweep(self) -> list[ConversationState]:
+        return [
+            state for state in self.conversations.values()
+            if state.state is not State.IDLE_CLOSED
+        ]
+
+    def update_settings(self, values: dict[str, int], admin_id: str) -> None:
+        self.settings.update(values)
+
+    def set_global_switch(
+        self, enabled: bool, admin_id: str, reason: str | None,
+    ) -> None:
+        self.global_switch = GlobalBotSwitch(
+            enabled=enabled, disabled_by=None if enabled else admin_id,
+            disabled_at=None if enabled else datetime.now(timezone.utc),
+            reason=reason,
+        )
+
     def audit(self, action: str, admin_id: str | None, conversation_id: str | None, detail: dict) -> None:
         # Append-only. No route in this app ever deletes from this list —
         # see docs/06 §3.0b. A real deployment enforces this with a DB grant.
@@ -163,10 +289,10 @@ class Store:
         self.totp_secrets[admin_id] = secret
 
     def set_setting(self, key: str, value: Any) -> None:
-        self.settings[key] = value
+        self.runtime_settings[key] = value
 
     def get_setting(self, key: str) -> Any:
-        return self.settings.get(key)
+        return self.runtime_settings.get(key)
 
 
 def _build_store() -> Store:
@@ -496,35 +622,53 @@ async def webhook_whatsapp(
         _mark_staff(store, message.conversation_id)
         return {"status": "ignored_staff_number", "run_agent": False}
 
-    conversation = store.get_conversation(message.conversation_id)
-
     if message.from_me:
-        if message.wa_message_id in store.sent_wa_ids:
+        sent_ids = store.sent_wa_ids() if callable(getattr(store, "sent_wa_ids", None)) else store.sent_wa_ids
+        if message.wa_message_id in sent_ids:
             return {"status": "ignored_own_echo"}
-        transition = apply(conversation, Event.FROM_ME_DETECTED, message_ts)
-        store.conversations[message.conversation_id] = transition.state
-        store.audit("phone_takeover_detected", None, message.conversation_id, {})
-        return {"status": "human_takeover_recorded", "effects": transition.effects}
+        for _attempt in range(3):
+            conversation = store.get_conversation(message.conversation_id)
+            transition = apply(conversation, Event.FROM_ME_DETECTED, message_ts)
+            persisted = store.persist_inbound_transition(
+                conversation, transition.state,
+                direction="out", sender_type="admin", body=message.body,
+                wa_message_id=message.wa_message_id,
+                sender_admin_id=message.admin_id,
+                cancel_bot_outbox=transition.cancel_pending_bot_outbox,
+            )
+            if persisted == "duplicate":
+                return {"status": "ignored_duplicate"}
+            if persisted == "conflict":
+                continue
+            store.audit("phone_takeover_detected", message.admin_id, message.conversation_id, {})
+            return {"status": "human_takeover_recorded", "effects": transition.effects}
+        raise Rejected("CONVERSATION_STATE_CONFLICT", "percakapan terlalu sibuk; coba lagi")
 
-    # BUG FIX (wiring test): should_run_agent must be asked BEFORE transitioning.
-    # apply() flips agent_run_active=True as part of starting a run, so checking
-    # should_run_agent on the POST-transition state always reads "already
-    # running" and the bot would never answer anything. should_run_agent exists
-    # for exactly this pre-check; the state machine's `effects` list is a
-    # separate, internal record of what apply() itself decided to do.
-    if not store.global_switch.enabled:
-        run, reason = False, "bot_globally_disabled"
-    else:
-        run, reason = should_run_agent(conversation, message_ts)
-
-    transition = apply(conversation, Event.INBOUND, message_ts)
-    store.conversations[message.conversation_id] = transition.state
-    store.messages.setdefault(message.conversation_id, []).append({
-        "direction": "in", "body": message.body, "at": message_ts.isoformat(),
-    })
-    _dispatch_and_record(store, transition, message_ts)
-
-    return {"status": "stored", "run_agent": run, "skip_reason": reason, "effects": transition.effects}
+    # Dedupe + message insert + state mutation are ONE repository transaction.
+    # A different message that loses the agent_run_active guard is retried from a
+    # fresh snapshot and becomes queue_followup instead of starting agent #2.
+    for _attempt in range(3):
+        conversation = store.get_conversation(message.conversation_id)
+        if not store.global_switch.enabled:
+            run, reason = False, "bot_globally_disabled"
+        else:
+            run, reason = should_run_agent(conversation, message_ts)
+        transition = apply(conversation, Event.INBOUND, message_ts)
+        persisted = store.persist_inbound_transition(
+            conversation, transition.state,
+            direction="in", sender_type="user", body=message.body,
+            wa_message_id=message.wa_message_id,
+        )
+        if persisted == "duplicate":
+            return {"status": "ignored_duplicate"}
+        if persisted == "conflict":
+            continue
+        _dispatch_and_record(store, transition, message_ts)
+        return {
+            "status": "stored", "run_agent": run,
+            "skip_reason": reason, "effects": transition.effects,
+        }
+    raise Rejected("CONVERSATION_STATE_CONFLICT", "percakapan terlalu sibuk; coba lagi")
 
 
 # ------------------------------- Dashboard (docs/06 §0.4) -------------------
@@ -547,6 +691,10 @@ def list_conversations(
             "assigned_admin_id": c.assigned_admin_id,
             "bot_paused_by": c.bot_paused_by,
             "last_activity_at": c.last_activity_at.isoformat() if c.last_activity_at else None,
+            "handover_requested_at": (
+                c.handover_requested_at.isoformat() if c.handover_requested_at else None
+            ),
+            "last_notified_at": c.last_notified_at.isoformat() if c.last_notified_at else None,
         }
         for c in rows
     ]
@@ -644,25 +792,24 @@ def admin_reply(
         conversation, Event.ADMIN_REPLY, now,
         admin_id=admin.admin_id, expected_version=payload.expected_version,
     )
-    store.conversations[conversation_id] = transition.state
-
     outbox_id = str(uuid.uuid4())
     key = (
         f"cli_{payload.client_request_id}" if payload.client_request_id
         else f"ob_{outbox_id}"
     )
-    if payload.client_request_id and any(
-        r.idempotency_key == key and r.status in (SendStatus.SENT, SendStatus.PENDING)
-        for r in store.outbox.values()
-    ):
-        raise HTTPException(409, "Permintaan kirim ini sudah diproses")
-
     record = SendRecord(
         outbox_id=outbox_id, conversation_id=conversation_id, body=payload.body,
-        sender_type="admin", state_version_at_enqueue=transition.state.state_version,
+        sender_type="admin", sender_admin_id=admin.admin_id,
+        state_version_at_enqueue=transition.state.state_version,
         idempotency_key=key,
     )
-    store.outbox[outbox_id] = record
+    result = store.persist_admin_reply(
+        payload.expected_version, transition.state, record,
+    )
+    if result == "duplicate":
+        raise HTTPException(409, "Permintaan kirim ini sudah diproses")
+    if result == "conflict":
+        raise Rejected("CONVERSATION_STATE_CONFLICT", "versi percakapan berubah saat diproses")
     store.audit("admin_reply_enqueued", admin.admin_id, conversation_id, {"outbox_id": outbox_id})
     return {"outbox_id": outbox_id, "status": record.status.value}
 
@@ -679,7 +826,16 @@ def get_timeout_settings(
     _admin: AdminIdentity = Depends(require_superadmin),
     store: Store = Depends(get_store),
 ) -> dict[str, int]:
-    return store.settings
+    defaults = TimeoutSettings()
+    effective = {
+        key: getattr(defaults, key)
+        for key in (
+            "citizen_idle_minutes", "queue_expiry_minutes",
+            "handover_auto_revert_minutes", "queue_notify_repeat_minutes",
+        )
+    }
+    effective.update(store.settings)
+    return effective
 
 
 @app.put("/settings/timeouts")
@@ -692,9 +848,10 @@ def put_timeout_settings(
     if errors:
         raise HTTPException(422, {"errors": errors})
     before = dict(store.settings)
-    store.settings.update(payload.values)
-    store.audit("settings_changed", admin.admin_id, None, {"before": before, "after": store.settings})
-    return store.settings
+    store.update_settings(payload.values, admin.admin_id)
+    after = dict(store.settings)
+    store.audit("settings_changed", admin.admin_id, None, {"before": before, "after": after})
+    return after
 
 
 # ── Nomor petugas (migrasi 009) ──
@@ -903,10 +1060,7 @@ def set_global_switch(
     admin: AdminIdentity = Depends(require_superadmin),
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
-    store.global_switch = GlobalBotSwitch(
-        enabled=enabled, disabled_by=None if enabled else admin.admin_id,
-        disabled_at=None if enabled else datetime.now(timezone.utc), reason=reason,
-    )
+    store.set_global_switch(enabled, admin.admin_id, reason)
     store.audit("global_switch", admin.admin_id, None, {"enabled": enabled, "reason": reason})
     return {"enabled": enabled}
 
@@ -916,10 +1070,12 @@ def whatsapp_status(
     _admin: AdminIdentity = Depends(current_admin),  # both roles, docs/06 §3.0a
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
+    pending_counter = getattr(store, "pending_outbox_count", None)
+    pending_count = pending_counter() if callable(pending_counter) else store.worker_health.pending_count
     return {
         "status": store.worker_health.status(),
         "connected": store.worker_health.connected,
-        "pending_count": store.worker_health.pending_count,
+        "pending_count": pending_count,
         "bot_globally_enabled": store.global_switch.enabled,
     }
 
@@ -962,6 +1118,23 @@ def internal_outbox_claim(
             for r in records
         ]
     }
+
+
+class OutboxAuthorizeRequest(BaseModel):
+    outbox_id: str
+
+
+@app.post("/internal/outbox/authorize")
+def internal_outbox_authorize(
+    body: OutboxAuthorizeRequest,
+    _key: None = Depends(require_internal_key),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    authorize = getattr(store, "authorize_claimed_outbox", None)
+    if authorize is None:
+        raise HTTPException(501, "Store aktif tidak mendukung final send gate")
+    allowed, reason = authorize(body.outbox_id)
+    return {"outbox_id": body.outbox_id, "allowed": allowed, "reason": reason}
 
 
 class OutboxUpdateRequest(BaseModel):
@@ -1010,18 +1183,23 @@ def run_sweep(
     code that nothing ever triggers. Not itself scheduled in this stage.
     """
     now = datetime.now(timezone.utc)
-    plan = plan_sweep(list(store.conversations.values()), now, TimeoutSettings(**{
-        k: v for k, v in store.settings.items() if k in TimeoutSettings.__dataclass_fields__
-    }))
+    timeout_values = {
+        key: value for key, value in store.settings.items()
+        if key in ("citizen_idle_minutes", "queue_expiry_minutes",
+                   "handover_auto_revert_minutes", "queue_notify_repeat_minutes")
+    }
+    candidates = store.conversations_needing_sweep()
+    plan = plan_sweep(candidates, now, TimeoutSettings(**timeout_values))
     applied = []
     for item in plan:
-        conversation = store.conversations[item.conversation_id]
+        conversation = store.get_conversation(item.conversation_id)
         event = Event.IDLE_TIMEOUT if item.event == "idle_timeout" else Event.AUTO_REVERT_CHECK
         try:
-            transition = apply(conversation, event, now)
+            transition = apply(conversation, event, now, TimeoutSettings(**timeout_values))
         except Rejected:
-            continue  # e.g. IDLE_TIMEOUT on ADMIN_ACTIVE — not applicable, skip
-        store.conversations[item.conversation_id] = transition.state
+            continue
+        if not store.compare_and_set(conversation.state_version, transition.state):
+            continue  # another worker/admin moved first
         if transition.cancel_pending_bot_outbox:
             _cancel_pending_bot_outbox(store, item.conversation_id)
         _dispatch_and_record(store, transition, now)
@@ -1037,9 +1215,10 @@ def get_notifications(
     store: Store = Depends(get_store),
 ) -> dict[str, Any]:
     """Inspection endpoint for the in-memory channel — testing/demo only."""
+    channel = store.notification_channel
     return {
-        "officer_messages": store.notification_channel.officer_messages,
-        "citizen_messages": store.notification_channel.citizen_messages,
+        "officer_messages": getattr(channel, "officer_messages", []),
+        "citizen_messages": getattr(channel, "citizen_messages", []),
     }
 
 
@@ -1049,7 +1228,7 @@ def get_notifications(
 def _dispatch_and_record(
     store: Store, transition, now: datetime, citizen_text: dict[str, str] | None = None,
 ) -> None:
-    conversation = store.conversations[transition.state.conversation_id]
+    conversation = store.get_conversation(transition.state.conversation_id)
     # BUG FIX (found by test_queued_conversation_notifies_officers_via_webhook):
     # `Transition.notify_officers` is a separate boolean field, NOT a string in
     # `Transition.effects` — but dispatch_effects only reads the effects list.
@@ -1066,17 +1245,8 @@ def _dispatch_and_record(
         citizen_text_by_effect=citizen_text,
     )
     if notified:
-        store.conversations[conversation.conversation_id] = ConversationState(
-            **{**conversation.__dict__, "last_notified_at": now}
-        )
+        store.mark_notified(conversation.conversation_id, conversation.state_version, now)
 
 
 def _cancel_pending_bot_outbox(store: Store, conversation_id: str) -> None:
-    for record in store.outbox.values():
-        if (
-            record.conversation_id == conversation_id
-            and record.sender_type == "bot"
-            and record.status == SendStatus.PENDING
-        ):
-            record.status = SendStatus.CANCELLED
-            record.last_error = "handover_preempted"
+    store.cancel_pending_bot_outbox(conversation_id, "handover_preempted")

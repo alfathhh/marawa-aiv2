@@ -25,6 +25,7 @@ mechanism — and the existing tests do not change, which is the point.
 from __future__ import annotations
 
 import json
+from contextlib import nullcontext
 from dataclasses import fields
 from datetime import datetime, timedelta, timezone
 from typing import Any
@@ -33,7 +34,10 @@ import psycopg
 from psycopg.rows import dict_row
 from psycopg.types.json import Jsonb
 
-from scripts.conversation_state import ConversationState, GlobalBotSwitch, State
+from scripts.conversation_state import (
+    ConversationState, GlobalBotSwitch, OutboxEntry, SETTING_BOUNDS, State,
+    authorize_send,
+)
 from scripts.outbox_worker import SendRecord, SendStatus, WorkerHealth
 
 CONVERSATION_COLUMNS = (
@@ -67,6 +71,10 @@ class PostgresStore:
 
     def _connect(self) -> psycopg.Connection:
         return psycopg.connect(self.dsn, row_factory=dict_row)
+
+    def lock_for(self, conversation_id: str):
+        """Match the in-memory store contract; CAS is the real DB lock."""
+        return nullcontext()
 
     # -- conversations ---------------------------------------------------
 
@@ -130,6 +138,17 @@ class PostgresStore:
             )
             return cur.rowcount == 1
 
+    def mark_notified(
+        self, conversation_id: str, expected_version: int, at: datetime,
+    ) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE marawa_conversations SET last_notified_at=%s "
+                "WHERE conversation_id=%s AND state_version=%s",
+                (at, conversation_id, expected_version),
+            )
+            return cur.rowcount == 1
+
     def list_conversations(self, limit: int = 100) -> list[ConversationState]:
         """Kotak masuk petugas.
 
@@ -187,6 +206,74 @@ class PostgresStore:
             )
             return list(reversed(cur.fetchall()))
 
+    def has_message_id(self, wa_message_id: str) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM marawa_messages WHERE wa_message_id=%s LIMIT 1",
+                (wa_message_id,),
+            )
+            return cur.fetchone() is not None
+
+    def persist_inbound_transition(
+        self, expected: ConversationState, new_state: ConversationState,
+        *, direction: str, sender_type: str, body: str,
+        wa_message_id: str, sender_admin_id: str | None = None,
+        cancel_bot_outbox: bool = False,
+    ) -> str:
+        """Atomically dedupe message, guard state, persist both, and preempt bot.
+
+        `state_version` alone is insufficient because normal inbound events can
+        flip `agent_run_active` without advancing the version. The extra flag in
+        the WHERE clause makes simultaneous different messages conflict; the
+        caller re-reads and retries so the loser becomes a queued follow-up.
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO marawa_messages (conversation_id,direction,sender_type,"
+                "sender_admin_id,body,wa_message_id) VALUES (%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (wa_message_id) WHERE wa_message_id IS NOT NULL DO NOTHING",
+                (
+                    new_state.conversation_id, direction, sender_type,
+                    sender_admin_id, body, wa_message_id,
+                ),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return "duplicate"
+            cur.execute(
+                """
+                UPDATE marawa_conversations SET
+                    state=%s, state_version=%s, assigned_admin_id=%s,
+                    bot_paused_by=%s, bot_paused_at=%s,
+                    last_admin_activity_at=%s, last_activity_at=%s,
+                    handover_requested_at=%s, resume_watermark_at=%s,
+                    last_notified_at=%s, agent_run_active=%s
+                WHERE conversation_id=%s AND state_version=%s
+                  AND agent_run_active=%s
+                """,
+                (
+                    new_state.state.value, new_state.state_version,
+                    new_state.assigned_admin_id, new_state.bot_paused_by,
+                    new_state.bot_paused_at, new_state.last_admin_activity_at,
+                    new_state.last_activity_at, new_state.handover_requested_at,
+                    new_state.resume_watermark_at, new_state.last_notified_at,
+                    new_state.agent_run_active, new_state.conversation_id,
+                    expected.state_version, expected.agent_run_active,
+                ),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return "conflict"
+            if cancel_bot_outbox:
+                cur.execute(
+                    "UPDATE marawa_outbox SET status='cancelled', "
+                    "last_error='handover_preempted', claimed_at=NULL, claimed_by=NULL "
+                    "WHERE conversation_id=%s AND sender_type='bot' "
+                    "AND status IN ('pending','claimed')",
+                    (new_state.conversation_id,),
+                )
+            return "persisted"
+
     # -- outbox ----------------------------------------------------------
 
     def enqueue_outbox(self, record: SendRecord) -> bool:
@@ -202,6 +289,80 @@ class PostgresStore:
                  record.status.value, record.idempotency_key),
             )
             return cur.rowcount == 1
+
+    def outbox_has_idempotency_key(self, key: str) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM marawa_outbox WHERE idempotency_key=%s LIMIT 1",
+                (key,),
+            )
+            return cur.fetchone() is not None
+
+    def persist_admin_reply(
+        self, expected_version: int, new_state: ConversationState,
+        record: SendRecord,
+    ) -> str:
+        """Atomically move state and enqueue reply: enqueued|duplicate|conflict."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM marawa_outbox WHERE idempotency_key=%s LIMIT 1",
+                (record.idempotency_key,),
+            )
+            if cur.fetchone() is not None:
+                conn.rollback()
+                return "duplicate"
+            cur.execute(
+                """
+                UPDATE marawa_conversations SET
+                    state=%s, state_version=%s, assigned_admin_id=%s,
+                    bot_paused_by=%s, bot_paused_at=%s,
+                    last_admin_activity_at=%s, last_activity_at=%s,
+                    handover_requested_at=%s, resume_watermark_at=%s,
+                    last_notified_at=%s, agent_run_active=%s
+                WHERE conversation_id=%s AND state_version=%s
+                """,
+                (
+                    new_state.state.value, new_state.state_version,
+                    new_state.assigned_admin_id, new_state.bot_paused_by,
+                    new_state.bot_paused_at, new_state.last_admin_activity_at,
+                    new_state.last_activity_at, new_state.handover_requested_at,
+                    new_state.resume_watermark_at, new_state.last_notified_at,
+                    new_state.agent_run_active, new_state.conversation_id,
+                    expected_version,
+                ),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return "conflict"
+            cur.execute(
+                "INSERT INTO marawa_outbox (outbox_id, conversation_id, body, "
+                "sender_type, sender_admin_id, state_version_at_enqueue, status, "
+                "idempotency_key) VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
+                (
+                    record.outbox_id, record.conversation_id, record.body,
+                    record.sender_type, record.sender_admin_id,
+                    record.state_version_at_enqueue, record.status.value,
+                    record.idempotency_key,
+                ),
+            )
+            if cur.rowcount != 1:
+                conn.rollback()
+                return "duplicate"
+            cur.execute(
+                "INSERT INTO marawa_messages (conversation_id, direction, "
+                "sender_type, sender_admin_id, body) VALUES (%s,'out','admin',%s,%s)",
+                (record.conversation_id, record.sender_admin_id, record.body),
+            )
+            return "enqueued"
+
+    def pending_outbox_count(self) -> int:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT count(*) AS n FROM marawa_outbox "
+                "WHERE status IN ('pending','claimed')"
+            )
+            return int(cur.fetchone()["n"])
 
     def claim_outbox_batch(self, worker_id: str, limit: int = 10) -> list[SendRecord]:
         """Lease pending rows.
@@ -244,6 +405,45 @@ class PostgresStore:
                 for r in cur.fetchall()
             ]
 
+    def authorize_claimed_outbox(self, outbox_id: str) -> tuple[bool, str | None]:
+        """Final state gate called by the worker immediately before send."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT outbox_id,conversation_id,body,sender_type,sender_admin_id,"
+                "state_version_at_enqueue,status FROM marawa_outbox "
+                "WHERE outbox_id=%s FOR UPDATE",
+                (outbox_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False, "outbox_not_found"
+            if row["status"] != SendStatus.CLAIMED.value:
+                return False, "outbox_not_claimed"
+            cur.execute(
+                f"SELECT {', '.join(CONVERSATION_COLUMNS)} FROM marawa_conversations "
+                "WHERE conversation_id=%s FOR UPDATE",
+                (row["conversation_id"],),
+            )
+            conversation_row = cur.fetchone()
+            if conversation_row is None:
+                allowed, reason = False, "conversation_not_found"
+            else:
+                entry = OutboxEntry(
+                    outbox_id=row["outbox_id"],
+                    conversation_id=row["conversation_id"],
+                    body=row["body"], sender_type=row["sender_type"],
+                    sender_admin_id=row["sender_admin_id"],
+                    state_version_at_enqueue=row["state_version_at_enqueue"],
+                )
+                allowed, reason = authorize_send(entry, _row_to_state(conversation_row))
+            if not allowed:
+                cur.execute(
+                    "UPDATE marawa_outbox SET status='cancelled',last_error=%s,"
+                    "claimed_at=NULL,claimed_by=NULL WHERE outbox_id=%s",
+                    (reason, outbox_id),
+                )
+            return allowed, reason
+
     def update_outbox(self, record: SendRecord) -> None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -257,8 +457,10 @@ class PostgresStore:
     def cancel_pending_bot_outbox(self, conversation_id: str, reason: str) -> int:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "UPDATE marawa_outbox SET status='cancelled', last_error=%s "
-                "WHERE conversation_id=%s AND sender_type='bot' AND status='pending'",
+                "UPDATE marawa_outbox SET status='cancelled', last_error=%s, "
+                "claimed_at=NULL, claimed_by=NULL "
+                "WHERE conversation_id=%s AND sender_type='bot' "
+                "AND status IN ('pending','claimed')",
                 (reason, conversation_id),
             )
             return cur.rowcount
@@ -316,7 +518,13 @@ class PostgresStore:
     def settings(self) -> dict[str, int]:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute("SELECT key, value FROM marawa_settings")
-            return {r["key"]: r["value"] for r in cur.fetchall()}
+            # marawa_settings also stores structured runtime values (QR,
+            # connection state, global switch). The timeout API has an explicit
+            # allowlist; value type is not a namespace.
+            return {
+                r["key"]: r["value"] for r in cur.fetchall()
+                if r["key"] in SETTING_BOUNDS
+            }
 
     def update_settings(self, values: dict[str, int], admin_id: str) -> None:
         with self._connect() as conn, conn.cursor() as cur:

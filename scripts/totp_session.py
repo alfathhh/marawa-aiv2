@@ -85,8 +85,16 @@ def verify_session(token: str | None, *, now: int | None = None) -> str | None:
     try:
         payload_b64, sig_b64 = token.split(".", 1)
         payload = base64.urlsafe_b64decode(payload_b64.encode() + b"=" * (-len(payload_b64) % 4))
+        signature = base64.urlsafe_b64decode(sig_b64 + "=" * (-len(sig_b64) % 4))
+        # Reject non-canonical base64url spellings. With unpadded base64, several
+        # final characters can decode to the same bytes because their low bits
+        # are padding. Accepting those makes a visibly modified token verify.
+        if base64.urlsafe_b64encode(payload).rstrip(b"=").decode() != payload_b64:
+            return None
+        if base64.urlsafe_b64encode(signature).rstrip(b"=").decode() != sig_b64:
+            return None
         expected = hmac.new(_SESSION_KEY.encode(), payload_b64.encode(), hashlib.sha256).digest()
-        if not secrets.compare_digest(expected, base64.urlsafe_b64decode(sig_b64 + "=" * (-len(sig_b64) % 4))):
+        if not secrets.compare_digest(expected, signature):
             return None
         admin_id, exp = payload.decode().rsplit(".", 1)
         now = int(time.time()) if now is None else now
