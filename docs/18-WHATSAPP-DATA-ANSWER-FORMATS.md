@@ -339,3 +339,40 @@ Golden tests minimum:
 - source conflict;
 - ingestion partial vs true no-data;
 - follow-up “bandingkan”, “tertinggi”, “grafiknya”, dan “sumbernya”.
+
+## 20. Answer gate + formatter reference implementation (16 Aug)
+
+Fondasi deterministik untuk invariant §2 sudah ada di repo (trusted control
+plane, read-only; runtime engine memanggil fungsi yang sama):
+
+- `scripts/answer_gate.py` — `Evidence`, `DerivedResult`, `GateContext`,
+  `evaluate(envelope, context) -> GateVerdict`, `abstention_text(NoDataReason…)`,
+  `safe_response(verdict)`. Berbasis ADR-016/018 rules, bukan prompt:
+  numeric grounding (angka draft harus tertelusur ke evidence), unit
+  publishable, selection envelope, citation allowlist, period disclosure,
+  leakage, bahasa Indonesia. Blokir = teks fixed (tidak menjelaskan internal,
+  tidak bocor draft). `NoDataReason`: not_in_catalogue, period_unavailable,
+  geography_unavailable, unit_under_review, gate_blocked, unclear_question —
+  abstention tiap reason spesifik dengan `available_periods/geographies` dari
+  runtime.
+- `scripts/answer_formatter.py` — `format_number()` (konvensi Indonesia),
+  `format_single_value()`, `format_trend()` (skip baris unpublishable +
+  beri tahu jumlah), `format_candidates()` (discovery, tidak pernah bocor
+  angka), `escape_wa()` (markup/netralisir upstream data).
+
+Kontrak JSON di `packages/contracts/bps-query-contracts.schema.json`:
+
+- `AnswerGateVerdict` — `{allowed, violations, observations, ungrounded_numbers}`
+- `SafeRefusalResponse` — `safe_response()`: `{scope, run_status: abstained,
+  answer_type, answer, evidence_ids, blocked_by_gate, internal_violations}`
+
+Cross-family `unit_state` vocabulary: serving view `bps_serving_dynamic`
+memakai `canonical|known|unknown_review|review_required`; registry measure
+memakai `known|unitless|unknown_review|review_required`. Gate menerima ketiga
+`known`, `unitless`, DAN `canonical` (unit dari
+`bps_dynamic_variables.unit_canonical` — provenance terbaik) sebagai publishable.
+
+Tests: `tests/test_answer_gate.py` (28 case: parsing angka Indonesia, grounding
+anti-hallucination, abstention, leak-proof refusal, `canonical` publishable) dan
+`tests/test_outbox_and_formatter.py` (format angka, single value, trend,
+candidate tanpa angka, end-to-end gate).

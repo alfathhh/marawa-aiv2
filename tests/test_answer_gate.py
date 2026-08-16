@@ -362,3 +362,15 @@ def test_no_hallucinated_number_survives_any_phrasing():
         verdict = evaluate(_envelope(draft), _context())
         assert verdict.blocked, f"lolos: {draft}"
         assert "452.900" not in safe_response(verdict)["answer"]
+
+
+def test_canonical_unit_state_is_publishable():
+    """bps_serving_dynamic emits unit_state='canonical' for units taken from
+    bps_dynamic_variables.unit_canonical — the best provenance. The gate must
+    accept it, or the flagship live rows (e.g. Jumlah Penduduk 2025) can never
+    be narrated."""
+    from scripts.answer_gate import check_unit_publishable
+
+    ev = _evidence(unit_state="canonical")
+    ctx = GateContext(evidence=[ev])
+    assert check_unit_publishable(ctx) == []

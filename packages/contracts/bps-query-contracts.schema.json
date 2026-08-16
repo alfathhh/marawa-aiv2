@@ -887,6 +887,85 @@
           "minLength": 1
         }
       }
+    },
+    "AnswerGateVerdict": {
+      "description": "Verdict dari answer gate (trusted control plane): boleh/tidaknya draft dinarasikan.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "allowed",
+        "violations",
+        "observations",
+        "ungrounded_numbers"
+      ],
+      "properties": {
+        "allowed": {
+          "type": "boolean"
+        },
+        "violations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "observations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "ungrounded_numbers": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
+    },
+    "SafeRefusalResponse": {
+      "description": "Output fixed yang dikirim saat gate memblokir (safe_response); teks deterministik, tidak pernah menjelaskan internal.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "scope",
+        "run_status",
+        "answer_type",
+        "answer",
+        "evidence_ids",
+        "blocked_by_gate"
+      ],
+      "properties": {
+        "scope": {
+          "type": "string"
+        },
+        "run_status": {
+          "type": "string",
+          "const": "abstained"
+        },
+        "answer_type": {
+          "type": "string"
+        },
+        "answer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "evidence_ids": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        },
+        "blocked_by_gate": {
+          "type": "boolean",
+          "const": true
+        },
+        "internal_violations": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          }
+        }
+      }
     }
   }
 }

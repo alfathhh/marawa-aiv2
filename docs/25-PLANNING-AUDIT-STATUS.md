@@ -160,6 +160,14 @@ The following pre-migration statements were stale and have been corrected in the
 
 - ✅ **Reconciliation vs built reality:** `docs/02-AGENT-RUNTIME` mendapat session-policy engine (idle 300s + handover SLA 180s, agent-first, pointer `docs/27`) + acceptance criteria menu non-forcing/natural cancel; `docs/04-RAG-AND-DATA` — structured data path ditandai BUILT (serving views + `marawa_runtime_ro` + binder), registry section status live (counts + candidate-set pinning), vector ANN ditandai deferred; `docs/07-WHATSAPP-WEBHOOK` — timed notices via scheduler/outbox dengan final state guard + contract tests baru.
 
+### Resolved hari ini (batch keempat — remediasi bundle 16 Aug)
+
+- ✅ **Migration 006 live**: views honest-naming settled (`category_code/label`, `unit_state`); constraint `aggregation_semantics` + `unknown`, `unit_state` + `review_required`; backfill-then-check order; registry 51 measures `NOT queryable`, 27 dataset `blocked_quality`.
+- ✅ **DB backup + build fix**: `bps_storage.ensure_schema` di-sinkronkan dengan 006 (drift rebuild yang menimpa view view fixed); SIMDASI measure dedup `DISTINCT ON (indicator_code)`.
+- ✅ **Answer gate/formatter contract (`docs/18` §20)**: `AnswerGateVerdict` + `SafeRefusalResponse` di schema JSON; `canonical` publishable (row live Jumlah Penduduk 2025 menembus gate sempat mustahil). Test gate 28 case.
+- ✅ **Golden E19 re-align**: `produksi beras` → family publication (factual ranking lawan registry); harness exercised 14/14, toleransi test dicabut.
+- ✅ **Prototype SQL**: 4 query pindah ke `category_label/category_code`; 13/13.
+
 ### Resolved hari ini (batch ketiga)
 - ✅ **Display-label normalization** — `migration 005`: `display_label` + `normalization_rule` + `label_raw`; 0 label HTML tersisa; empty-label fallback ke item code dengan rule tercatat.
 - ✅ **Query templates + binder** — enam template diperbarui sehingga SETIAP declared parameter dipakai di SQL; `scripts/bps_template_binder.py` validasi tipe/nullable/required; unknown/missing/type/injection ditolak; `row_limit` server-side; test eksekusi live.

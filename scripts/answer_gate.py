@@ -46,7 +46,7 @@ from typing import Any, Iterable
 
 # Unit states a measure may carry into a public answer. Anything else means the
 # unit was guessed or unknown, and per ADR-016 must never reach a user.
-PUBLISHABLE_UNIT_STATES = frozenset({"known", "unitless"})
+PUBLISHABLE_UNIT_STATES = frozenset({"known", "unitless", "canonical"})
 
 # Words that legitimately scale a printed figure ("1,23 juta orang").
 SCALE_WORDS: dict[str, Decimal] = {

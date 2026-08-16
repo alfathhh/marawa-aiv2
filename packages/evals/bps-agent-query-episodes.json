@@ -1033,12 +1033,12 @@
             "query_facts": false,
             "requires_user_selection": true,
             "candidate_refs": [
-              "D1",
-              "S1"
+              "P1"
             ],
-            "recommended_ref": "D1",
+            "recommended_ref": "P1",
             "handover_cancelled": true,
             "menu_recalled": false,
+            "note": "istilah 'beras' hanya muncul di judul publikasi; dataset dynamic padi yang relevan blocked_quality sejak 006",
             "forbidden_effects": [
               "free_sql",
               "fact_query_before_candidate_selection",

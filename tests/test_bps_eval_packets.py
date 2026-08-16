@@ -40,18 +40,12 @@ def test_golden_episode_harness_tools_mode() -> None:
     # The harness reports exercised assertions against executable turns;
     # several episodes are not yet executable (no session-policy / no query
     # runtime).  Measure against exercised, not against the full 19.
-    # Episode 019 'produksi beras' is known to flip family from dynamic
-    # to publication when the dynamic candidate becomes blocked_quality
-    # after 006 measure-level gate - exercised failure there is expected
-    # until its golden expectation is re-aligned.
     exercised = report.get("episodes_evaluated")
     passed = sum(1 for c in report["cases"] if c["status"] == "passed")
-    failed = sum(1 for c in report["cases"] if c["status"] == "failed")
     assert report.get("mode") in ("tools", None)
     assert exercised is not None
     if exercised:
-        assert passed + failed == exercised, report["cases"]
-        assert passed >= exercised - 1, report["cases"]
+        assert passed == exercised, report["cases"]
     assert REPORT_PATH.exists()
 
 
