@@ -82,6 +82,12 @@ async function claimAndSend(sock) {
   }
 }
 
+// Poll timer lives at module scope so reconnects (main() re-invocation via
+// setTimeout) clear the previous interval instead of stacking duplicate
+// polls. Without this guard, every WhatsApp reconnect adds one more
+// claimAndSend loop → outbox claim hammering grows unbounded (observed ~50/s).
+let pollTimer = null;
+
 async function main() {
   mkdirSync(CRED_DIR, { recursive: true });
   const { state, saveCreds } = await useMultiFileAuthState(CRED_DIR);
@@ -125,7 +131,8 @@ async function main() {
     }
   });
 
-  setInterval(() => claimAndSend(sock), 5000);
+  if (pollTimer) clearInterval(pollTimer);
+  pollTimer = setInterval(() => claimAndSend(sock), 5000);
   console.log('[marawa-worker] start. PID', process.pid);
 }
 

@@ -73,6 +73,22 @@ def test_whatsapp_worker_calls_final_gate_before_send() -> None:
     assert "if (!gate.allowed) continue" in js
 
 
+def test_whatsapp_worker_poll_timer_is_guarded_against_reconnect_stacking() -> None:
+    """Reconnect memanggil main() lagi; interval baru wajib replace, bukan nambah.
+
+    Tanpa guard, tiap reconnect (setTimeout(main, 3000)) menumpuk satu
+    claimAndSend interval → outbox claim hammering tak terbatas. Terukur live:
+    21800 claim per 7 menit (51,9/s) sebelum fix → 293 per 7 menit (0,68/s)
+    setelah fix. Guard harus pakai handle module-scope + clearInterval.
+    """
+    js = WORKER.read_text(encoding="utf-8")
+    assert "let pollTimer = null;" in js
+    clear = js.index("if (pollTimer) clearInterval(pollTimer);")
+    set_ = js.index("pollTimer = setInterval(() => claimAndSend(sock), 5000);")
+    assert clear < set_
+    assert js.index("setTimeout(main, 3000)") >= 0
+
+
 def test_dashboard_uses_user_wording_and_has_account_management() -> None:
     html = source()
     assert "warga" not in html.lower()
