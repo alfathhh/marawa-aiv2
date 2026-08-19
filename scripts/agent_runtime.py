@@ -231,11 +231,17 @@ class OpenAICompatibleLLM:
 
 
 class AgentRuntime:
-    """Poll percakapan dengan agent_run_active, eksekusi, tuntaskan."""
+    """Poll percakapan dengan agent_run_active, eksekusi, tuntaskan.
 
-    def __init__(self, store: Any, llm: LLMClient) -> None:
+    rag_pipeline opsional: bila tersambung, permintaan data statistik dijawab
+    deterministik (offering -> selection -> typed query -> gate) TANPA LLM.
+    LLM hanya meneruskan sapaan/non-goal; angka tidak pernah dari model.
+    """
+
+    def __init__(self, store: Any, llm: LLMClient, rag: Any = None) -> None:
         self.store = store
         self.llm = llm
+        self.rag = rag
 
     def _pending(self, limit: int) -> list[ConversationState]:
         convs = self.store.conversations.values() if hasattr(self.store, "conversations") else []
@@ -249,6 +255,16 @@ class AgentRuntime:
 
     def _pending_pg(self, limit: int) -> list[ConversationState]:
         return self.store.conversations_needing_agent_run(limit)  # type: ignore[attr-defined]
+
+    def _last_inbound_text(self, cid: str) -> str | None:
+        """Pesan user terakhir — input untuk deteksi goal RAG."""
+        msgs = self.store.messages(cid, limit=20) if callable(
+            getattr(self.store, "messages", None)
+        ) else self.store.messages.get(cid, [])[-20:]
+        for m in msgs:  # store mengembalikan terbaru->terlama
+            if m.get("direction") == "in":
+                return m.get("body")
+        return None
 
     def process_pending(self, limit: int = 10) -> int:
         try:
@@ -265,11 +281,25 @@ class AgentRuntime:
 
     def _process_one(self, conv: ConversationState) -> bool:
         cid = conv.conversation_id
-        ctx = build_context(self.store, cid)
-        result = self.llm.complete(ctx)
-        if result.error and result.error not in ("simulated_failure",):
-            log.warning("LLM gagal cid=%s error=%s latency_ms=%s", cid, result.error, result.latency_ms)
-        body = result.text if result.text else FALLBACK_REPLY
+        # RAG dulu: permintaan angka dijawab deterministik (offering/query/gate),
+        # tanpa LLM. kind "passthrough" berarti bukan goal data -> serahkan LLM.
+        rag_text: str | None = None
+        if self.rag is not None:
+            try:
+                last_in = self._last_inbound_text(cid)
+                outcome = self.rag.handle(cid, last_in or "")
+                if outcome.kind in ("offer", "answer", "clarify", "unavailable"):
+                    rag_text = outcome.text
+            except Exception as exc:  # pipeline gagal -> jatuh ke LLM/fallback
+                log.warning("rag pipeline error cid=%s: %s", cid, exc)
+        if rag_text is not None:
+            body = rag_text
+        else:
+            ctx = build_context(self.store, cid)
+            result = self.llm.complete(ctx)
+            if result.error and result.error not in ("simulated_failure",):
+                log.warning("LLM gagal cid=%s error=%s latency_ms=%s", cid, result.error, result.latency_ms)
+            body = result.text if result.text else FALLBACK_REPLY
         record = SendRecord(
             outbox_id=str(uuid.uuid4()),
             conversation_id=cid,

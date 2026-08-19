@@ -18,7 +18,11 @@ from typing import Iterable, Sequence
 
 from scripts.answer_gate import Evidence, NoDataReason, abstention_text
 
-PUBLISHABLE_UNIT_STATES = frozenset({"known", "unitless"})
+# 'canonical' = unit dari bps_dynamic_variables.unit_canonical (terverifikasi,
+# paling terpercaya). 'known' = unit mentah dari fact. 'unitless' = memang tak
+# bersatuan. Ketiganya boleh dipublikasikan; 'unknown_review' (unit tak jelas)
+# WAJIB ditolak — angka tanpa satuan pasti adalah jawaban yang salah.
+PUBLISHABLE_UNIT_STATES = frozenset({"canonical", "known", "unitless"})
 
 FAMILY_PREFIX = {
     "simdasi": ("S", "SIMDASI"),

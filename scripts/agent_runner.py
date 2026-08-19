@@ -22,14 +22,43 @@ logging.basicConfig(
 log = logging.getLogger("marawa-agent")
 
 
+def _build_rag():
+    """RAG pipeline terhadap data BPS lokal. Gagal -> None (agent tetap jalan,
+    permintaan angka jatuh ke prompt guardrail, bukan crash)."""
+    try:
+        from scripts.rag_pipeline import RagPipeline
+        from scripts.rag_store_pg import (
+            PgSelectionStore,
+            _dsn,
+            load_offering_index,
+            make_offer,
+            query_serving,
+        )
+        index = load_offering_index()
+        sel_store = PgSelectionStore(_dsn())
+        rag = RagPipeline(
+            store=sel_store,
+            llm=None,
+            querier=query_serving,
+            offer=make_offer(),
+            offering_index=index,
+        )
+        log.info("rag pipeline aktif: %d family index", len(index.get("by_family", {})))
+        return rag
+    except Exception:
+        log.exception("rag pipeline gagal dibangun — lanjut tanpa RAG")
+        return None
+
+
 def main() -> int:
     store = _build_store()
     llm = OpenAICompatibleLLM()
     if not llm.configured:
         log.error("MARAWA_LLM_BASE_URL/API_KEY/MODEL tidak lengkap — keluar.")
         return 2
-    runtime = AgentRuntime(store=store, llm=llm)
-    log.info("agent runner siap; model=%s", llm.model)
+    rag = _build_rag()
+    runtime = AgentRuntime(store=store, llm=llm, rag=rag)
+    log.info("agent runner siap; model=%s rag=%s", llm.model, "on" if rag else "off")
     idle_cycles = 0
     last_sweep = 0.0
     while True:
