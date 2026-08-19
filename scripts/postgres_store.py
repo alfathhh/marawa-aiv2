@@ -174,10 +174,71 @@ class PostgresStore:
         """
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                f"SELECT {', '.join(CONVERSATION_COLUMNS)} FROM marawa_conversations "
+                "SELECT " + ", ".join(CONVERSATION_COLUMNS) + " FROM marawa_conversations "
                 "WHERE state <> 'IDLE_CLOSED' AND NOT is_staff_channel"
             )
             return [_row_to_state(r) for r in cur.fetchall()]
+
+    def conversations_needing_agent_run(self, limit: int = 10) -> list[ConversationState]:
+        """Pending agent runs: BOT_ACTIVE (bukan ADMIN_ACTIVE/queue), bukan staff."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT " + ", ".join(CONVERSATION_COLUMNS) + " FROM marawa_conversations "
+                "WHERE agent_run_active AND state NOT IN ('ADMIN_ACTIVE','QUEUE_WAIT') "
+                "AND NOT is_staff_channel "
+                "ORDER BY last_activity_at DESC NULLS LAST LIMIT %s",
+                (limit,),
+            )
+            return [_row_to_state(r) for r in cur.fetchall()]
+
+    def complete_agent_run(
+        self, conversation_id: str, expected_version: int, record: "SendRecord",
+    ) -> bool:
+        """Atomically: enqueue bot reply + persist transcript + clear run flag.
+
+        CAS on state_version mencegah dua agent runner mengirim balasan ganda;
+        idempotency_key mencegah re-enqueue setelah crash antara kedua langkah.
+        """
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM marawa_outbox WHERE idempotency_key=%s LIMIT 1",
+                (record.idempotency_key,),
+            )
+            if cur.fetchone() is not None:
+                # sudah pernah dikirim untuk run ini → anggap selesai (idempotent)
+                cur.execute(
+                    "UPDATE marawa_conversations SET agent_run_active=false "
+                    "WHERE conversation_id=%s AND state_version=%s",
+                    (conversation_id, expected_version),
+                )
+                return cur.rowcount == 1
+            cur.execute(
+                "UPDATE marawa_conversations SET agent_run_active=false "
+                "WHERE conversation_id=%s AND state_version=%s",
+                (conversation_id, expected_version),
+            )
+            if cur.rowcount != 1:
+                return False
+            cur.execute(
+                "INSERT INTO marawa_outbox (outbox_id, conversation_id, body, sender_type, "
+                "sender_admin_id, state_version_at_enqueue, status, idempotency_key) "
+                "VALUES (%s,%s,%s,%s,%s,%s,%s,%s) "
+                "ON CONFLICT (idempotency_key) WHERE idempotency_key IS NOT NULL DO NOTHING",
+                (
+                    record.outbox_id, record.conversation_id, record.body,
+                    record.sender_type, record.sender_admin_id,
+                    record.state_version_at_enqueue, record.status.value,
+                    record.idempotency_key,
+                ),
+            )
+            if cur.rowcount != 1:
+                return False
+            cur.execute(
+                "INSERT INTO marawa_messages (conversation_id, direction, sender_type, body) "
+                "VALUES (%s,'out','bot',%s)",
+                (conversation_id, record.body),
+            )
+            return True
 
     # -- messages --------------------------------------------------------
 
