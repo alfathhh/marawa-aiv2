@@ -54,9 +54,28 @@ def test_build_context_orders_messages_and_caps_length() -> None:
     store = _store_with_pending("628111@s.whatsapp.net")
     store.append_message("628111@s.whatsapp.net", "out", "bot", "halo")
     ctx = build_context(store, "628111@s.whatsapp.net", limit=2)
-    assert len(ctx) <= 3  # system + max 2
+    # system + max 2 pesan (+ phase-line saat pesan terakhir = inbound)
+    assert len(ctx) <= 4
     assert ctx[0]["role"] == "system"
     assert ctx[-1]["content"] == "ping"
+
+
+def test_build_context_injects_phase_line_for_inbound_turn() -> None:
+    """Phase-line: model dapat status percakapan eksplisit, bukan tebak-tebakan.
+
+    Regression utk eval run #8 (phase-line injection): saat pesan terakhir
+    inbound, context diakhiri status percakapan deterministik.
+    """
+    store = _store_with_pending("628111@s.whatsapp.net")
+    ctx = build_context(store, "628111@s.whatsapp.net", limit=5)
+    assert any("STATUS PERCAKAPAN" in m["content"] for m in ctx)
+
+
+def test_conversation_phase_states() -> None:
+    from scripts.agent_runtime import conversation_phase
+    assert "BELUM" in conversation_phase([])
+    assert "ditawarkan" in conversation_phase([{"direction": "out", "sender_type": "bot", "body": "pilih D1"}])
+    assert "SUDAH" in conversation_phase([{"direction": "out", "sender_type": "bot", "body": "pilih? D1/D2"}])
 
 
 def test_agent_runtime_happy_path_enqueues_bot_reply_and_completes_run() -> None:
