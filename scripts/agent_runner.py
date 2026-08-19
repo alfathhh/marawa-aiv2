@@ -12,7 +12,7 @@ import sys
 import time
 
 from scripts.agent_runtime import AgentRuntime, OpenAICompatibleLLM
-from scripts.app import _build_store
+from scripts.app import _build_store, run_sweep_logic
 
 logging.basicConfig(
     level=logging.INFO,
@@ -31,6 +31,7 @@ def main() -> int:
     runtime = AgentRuntime(store=store, llm=llm)
     log.info("agent runner siap; model=%s", llm.model)
     idle_cycles = 0
+    last_sweep = 0.0
     while True:
         try:
             processed = runtime.process_pending(limit=5)
@@ -41,6 +42,12 @@ def main() -> int:
                 idle_cycles += 1
                 if idle_cycles % 100 == 0:
                     log.info("idle %d siklus", idle_cycles)
+            # sweep timeout tiap 60 dtk, in-process (tidak ada caller eksternal)
+            if time.monotonic() - last_sweep >= 60:
+                result = run_sweep_logic(store)
+                if result["planned"]:
+                    log.info("sweep: planned=%d applied=%d", result["planned"], len(result["applied"]))
+                last_sweep = time.monotonic()
         except Exception:  # noqa: BLE001
             log.exception("loop error (tetap lanjut)")
             time.sleep(5)

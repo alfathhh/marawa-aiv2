@@ -188,6 +188,7 @@ class AgentRuntime:
             c for c in convs
             if c.agent_run_active
             and c.state is not State.ADMIN_ACTIVE
+            and c.state is not State.QUEUED
             and not getattr(self.store, "is_staff_channel", lambda _cid: False)(c.conversation_id)
         ][:limit]
 

@@ -1264,20 +1264,14 @@ def internal_outbox_update(
     return {"outbox_id": body.outbox_id, "status": body.status}
 
 
-@app.post("/internal/sweep")
-def run_sweep(
-    # AUDIT G: this was unauthenticated. A sweep mutates conversation state, and
-    # anyone able to reach the port could force-close sessions or revert
-    # handovers. "Internal" in a path segment is not an access control.
-    _admin: AdminIdentity = Depends(require_superadmin),
-    store: Store = Depends(get_store),
-) -> dict[str, Any]:
-    """Applies IDLE_TIMEOUT / AUTO_REVERT_CHECK to every conversation that is
-    due. Call this every minute (cron, APScheduler, or a worker loop) —
-    without a caller hitting this, every timeout guarantee in docs/06 is dead
-    code that nothing ever triggers. Not itself scheduled in this stage.
+def run_sweep_logic(store: Store, now: datetime | None = None) -> dict[str, Any]:
+    """Sweep logic yang bisa dipanggil in-process (agent runner) maupun endpoint.
+
+    Sebelumnya hanya hidup di balik endpoint /internal/sweep yang meminta
+    sesi superadmin — tidak ada caller otomatis, jadi semua timeout
+    (idle-close, auto-revert) tidak pernah jalan di produksi.
     """
-    now = datetime.now(timezone.utc)
+    now = now or datetime.now(timezone.utc)
     timeout_values = {
         key: value for key, value in store.settings.items()
         if key in ("citizen_idle_minutes", "queue_expiry_minutes",
@@ -1301,6 +1295,18 @@ def run_sweep(
         applied.append({"conversation_id": item.conversation_id, "reason": item.reason,
                         "new_state": transition.state.state.value})
     return {"planned": len(plan), "applied": applied}
+
+
+@app.post("/internal/sweep")
+def run_sweep(
+    _admin: AdminIdentity = Depends(require_superadmin),
+    store: Store = Depends(get_store),
+) -> dict[str, Any]:
+    """Applies IDLE_TIMEOUT / AUTO_REVERT_CHECK to every conversation that is
+    due. Dipanggil otomatis tiap menit oleh marawa-agent (in-process), atau
+    manual oleh superadmin.
+    """
+    return run_sweep_logic(store)
 
 
 @app.get("/internal/notifications")

@@ -1,6 +1,6 @@
 # BPS Unit Review Packet — blocked_quality datasets
 
-> Generated: 2026-08-19T17:00:16 (manual, no cron)
+> Generated: 2026-08-19T17:35:00 (manual, no cron)
 > Sumber: `bps_registry` published. Review oleh data owner; JANGAN menebak unit.
 > Excel: `data/reports/bps-unit-review-20260819.xlsx`
 

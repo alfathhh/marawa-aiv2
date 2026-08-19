@@ -130,3 +130,20 @@ def test_agent_runtime_persists_bot_reply_to_transcript() -> None:
     msgs = store.messages(cid="628111@s.whatsapp.net") if callable(getattr(store, "messages", None)) else store.messages.get("628111@s.whatsapp.net", [])
     out_bodies = [m["body"] for m in msgs if m.get("direction") == "out"]
     assert "Halo! Ada yang bisa dibantu?" in out_bodies
+
+
+def test_agent_runtime_skips_queued_conversations() -> None:
+    """Regression: QUEUED (user minta petugas) tidak boleh dijawab bot.
+
+    Bug 2026-08-19: filter SQL memakai 'QUEUE_WAIT' (nama salah) sehingga
+    percakapan QUEUED lolos dan bot menjawab di atas antrian petugas.
+    """
+    store = InMemoryStore()
+    cid = "628111@s.whatsapp.net"
+    store.get_conversation(cid)
+    store.conversations[cid] = replace(
+        store.conversations[cid], agent_run_active=True, state=State.QUEUED,
+    )
+    runtime = AgentRuntime(store=store, llm=StaticLLM("x"))
+    assert runtime.process_pending(limit=5) == 0
+    assert not [r for r in store.outbox.values() if r.conversation_id == cid]

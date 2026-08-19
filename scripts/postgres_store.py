@@ -184,7 +184,7 @@ class PostgresStore:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
                 "SELECT " + ", ".join(CONVERSATION_COLUMNS) + " FROM marawa_conversations "
-                "WHERE agent_run_active AND state NOT IN ('ADMIN_ACTIVE','QUEUE_WAIT') "
+                "WHERE agent_run_active AND state NOT IN ('ADMIN_ACTIVE','QUEUED') "
                 "AND NOT is_staff_channel "
                 "ORDER BY last_activity_at DESC NULLS LAST LIMIT %s",
                 (limit,),
