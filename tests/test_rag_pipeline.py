@@ -190,3 +190,85 @@ def test_root_redirects_to_admin() -> None:
     r = c.get("/")
     assert r.status_code in (302, 307)
     assert r.headers.get("location") == "/admin"
+
+
+def test_census_inspect_mode_no_aggregate() -> None:
+    """Census tidak pernah auto-agregat (pemekaran kecamatan -> SUM salah 2x)."""
+    import os, sys
+    if not os.environ.get("MARAWA_TEST_DSN"):
+        pytest.skip("MARAWA_TEST_DSN tidak diset")
+    sys.path.insert(0, ".")
+    from scripts.rag_store_pg import query_census_inspect, _dsn
+    import psycopg
+    from psycopg.rows import dict_row
+    with psycopg.connect(_dsn(), row_factory=dict_row) as c:
+        rows = query_census_inspect(c, "penduduk", None)
+    assert rows, "census inspect harus mengembalikan cakupan"
+    assert "wilayah_count" in rows[0] and "value" not in rows[0]
+
+def test_publication_metadata_only() -> None:
+    """Publication mengembalikan metadata (judul/katalog), bukan angka."""
+    import os, sys
+    if not os.environ.get("MARAWA_TEST_DSN"):
+        pytest.skip("MARAWA_TEST_DSN tidak diset")
+    sys.path.insert(0, ".")
+    from scripts.rag_store_pg import query_publication_meta, _dsn
+    import psycopg
+    from psycopg.rows import dict_row
+    with psycopg.connect(_dsn(), row_factory=dict_row) as c:
+        rows = query_publication_meta(c, "penduduk", None)
+    assert rows and "title" in rows[0] and "value" not in rows[0]
+
+
+# --- aksi lanjutan (compare/analyze/paging/rerank) ---
+
+def _pipe_with_geo():
+    import os, sys
+    if not os.environ.get("MARAWA_TEST_DSN"):
+        pytest.skip("MARAWA_TEST_DSN tidak diset")
+    sys.path.insert(0, ".")
+    import psycopg
+    from scripts.rag_pipeline import RagPipeline
+    from scripts.rag_store_pg import PgSelectionStore, _dsn, load_offering_index, make_offer, query_serving
+    idx = load_offering_index(); sel = PgSelectionStore(_dsn())
+    rag = RagPipeline(store=sel, llm=None, querier=query_serving, offer=make_offer(), offering_index=idx)
+    return rag, sel, _dsn
+
+def test_compare_periods_trend() -> None:
+    import psycopg
+    rag, sel, dsn_fn = _pipe_with_geo(); dsn = dsn_fn()
+    cid = "628100000001@s.whatsapp.net"
+    with psycopg.connect(dsn) as c: c.execute("DELETE FROM public.rag_selection WHERE conversation_id=%s",(cid,)); c.commit()
+    rag.handle(cid, "berapa jumlah penduduk?"); rag.handle(cid, "D1")
+    o = rag.handle(cid, "bandingkan dengan tahun sebelumnya")
+    assert o.kind == "answer"
+    assert "2025" in o.text and "2024" in o.text  # trend multi-periode
+
+def test_analyze_ranking_kecamatan() -> None:
+    import psycopg
+    rag, sel, dsn_fn = _pipe_with_geo(); dsn = dsn_fn()
+    cid = "628100000002@s.whatsapp.net"
+    with psycopg.connect(dsn) as c: c.execute("DELETE FROM public.rag_selection WHERE conversation_id=%s",(cid,)); c.commit()
+    rag.handle(cid, "berapa jumlah penduduk?"); rag.handle(cid, "D1")
+    o = rag.handle(cid, "urutkan kecamatan tertinggi")
+    assert o.kind == "answer"
+    assert "Kabupaten" not in o.text.split(chr(10))[2]  # baris pertama bukan agregat kabupaten
+    assert "Batang Anai" in o.text or "jiwa" in o.text
+
+def test_paging_candidates() -> None:
+    import psycopg
+    rag, sel, dsn_fn = _pipe_with_geo(); dsn = dsn_fn()
+    cid = "628100000003@s.whatsapp.net"
+    with psycopg.connect(dsn) as c: c.execute("DELETE FROM public.rag_selection WHERE conversation_id=%s",(cid,)); c.commit()
+    rag.handle(cid, "publikasi tentang penduduk")
+    o = rag.handle(cid, "lanjut")
+    assert o.kind in ("offer", "clarify")
+
+def test_rerank_negation() -> None:
+    import psycopg
+    rag, sel, dsn_fn = _pipe_with_geo(); dsn = dsn_fn()
+    cid = "628100000004@s.whatsapp.net"
+    with psycopg.connect(dsn) as c: c.execute("DELETE FROM public.rag_selection WHERE conversation_id=%s",(cid,)); c.commit()
+    rag.handle(cid, "data pendidikan")
+    o = rag.handle(cid, "bukan pendidikan, jumlah SD")
+    assert o.kind in ("offer", "clarify")

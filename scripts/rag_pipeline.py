@@ -33,6 +33,7 @@ from scripts.answer_formatter import (
     Candidate,
     format_candidates,
     format_single_value,
+    format_trend,
 )
 from scripts.answer_gate import (
     Evidence,
@@ -64,6 +65,20 @@ GOAL_RE = re.compile(
     r"inflasi|penduduk|kemiskinan|ipm|produksi|luas|hasil)",
     re.IGNORECASE,
 )
+
+# Intent aksi lanjutan (setelah seleksi / hasil ada).
+COMPARE_RE = re.compile(
+    r"(bandingkan|dibanding|selisih|selisihnya|lebih (besar|tinggi|banyak)|"
+    r"naik|turun|pertumbuhan|tren|trend|perkembangan|dari tahun)",
+    re.IGNORECASE,
+)
+ANALYZE_RE = re.compile(
+    r"(urutkan|peringkat|tertinggi|terendah|paling (tinggi|besar|banyak|rendah)|"
+    r"terbesar|terkecil|mana yang)",
+    re.IGNORECASE,
+)
+PAGE_RE = re.compile(r"^(lanjut|next|berikutnya|lanjut publikasi)$", re.IGNORECASE)
+RERANK_RE = re.compile(r"^bukan\s+\w+", re.IGNORECASE)  # "bukan pendidikan, jumlah SD"
 
 
 @dataclass(frozen=True)
@@ -155,6 +170,13 @@ class RagPipeline:
         offered = self._current_offered(conversation_id)
         selection = self._current_selection(conversation_id)
 
+        # (1b) aksi lanjutan pada daftar yang ditawarkan (paging / rerank).
+        if offered and selection is None:
+            if PAGE_RE.match(text.strip()):
+                return self._page_candidates(conversation_id, offered)
+            if RERANK_RE.match(text.strip()):
+                return self._rerank(conversation_id, text)
+
         # (1) ref eksplisit + ada daftar yang ditawarkan -> user memilih.
         ref = self._extract_ref(text)
         if ref and offered and selection is None:
@@ -165,8 +187,13 @@ class RagPipeline:
                     conversation_id, text, sel, selection_source="explicit_ref"
                 )
 
-        # (2) follow-up pada seleksi yang sudah ada.
+        # (2) follow-up pada seleksi yang sudah ada: aksi turunan dulu
+        #     (banding/analisis), baru query fakta biasa.
         if selection is not None:
+            if COMPARE_RE.search(text):
+                return self._compare_periods(conversation_id, text, selection)
+            if ANALYZE_RE.search(text):
+                return self._analyze_ranking(conversation_id, text, selection)
             return self._answer_from_selection(conversation_id, text, selection)
 
         # (3) goal data baru -> OFFER.
@@ -259,7 +286,16 @@ class RagPipeline:
         self, conversation_id: str, text: str, selection: dict[str, Any],
         selection_source: str = "active_dataset",
     ) -> RagOutcome:
-        rows = self.querier(selection.get("family"), text, selection) or []
+        family = selection.get("family")
+        # Census: metadata inspect saja (multi-dimensi + pemekaran kecamatan
+        # membuat agregat naif salah 2x). Publication: metadata saja (angka
+        # butuh render PDF). Keduanya TIDAK lewat format_single_value.
+        if family == "census":
+            return self._inspect_census(conversation_id, text, selection)
+        if family == "publication":
+            return self._show_publications(conversation_id, text, selection)
+
+        rows = self.querier(family, text, selection) or []
         if not rows:
             return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.NOT_IN_CATALOGUE))
 
@@ -294,3 +330,138 @@ class RagPipeline:
             text=answer,
             evidence_ids=[e.evidence_id for e in evidence],
         )
+
+    def _inspect_census(
+        self, conversation_id: str, text: str, selection: dict[str, Any]
+    ) -> RagOutcome:
+        """Census = inspect_dataset. Jelaskan cakupan + periode, minta user
+        memperjelas wilayah/dimensi. Tidak pernah menjawab agregat (invariant #3)."""
+        rows = self.querier("census", text, selection) or []
+        if not rows:
+            return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.NOT_IN_CATALOGUE))
+        lines = [f"*Data Sensus — {selection.get('indicator_name','topik')}*", ""]
+        for r in rows:
+            lines.append(
+                f"• {r.get('indicator_name')} — periode {r.get('period')}, "
+                f"{r.get('wilayah_count')} kecamatan, {r.get('row_count')} baris rincian."
+            )
+        lines.append("")
+        lines.append(
+            "Data sensus ini sangat rinci (per kecamatan, jenis kelamin, agama, "
+            "pendidikan, pekerjaan, dsb.). Sebutkan yang Anda butuhkan lebih "
+            "spesifik — misalnya kecamatan dan perinciannya — atau balas *ADMIN* "
+            "untuk dibantu petugas PST."
+        )
+        return RagOutcome(kind="answer", text="\n".join(lines))
+
+    def _show_publications(
+        self, conversation_id: str, text: str, selection: dict[str, Any]
+    ) -> RagOutcome:
+        """Publication = metadata saja (judul, katalog, rilis, tautan PDF)."""
+        rows = self.querier("publication", text, selection) or []
+        if not rows:
+            return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.NOT_IN_CATALOGUE))
+        lines = ["Berikut publikasi yang relevan:", ""]
+        for i, p in enumerate(rows, 1):
+            rilis = str(p.get("release_date") or "-")
+            lines.append(f"{i}. *{p.get('title', 'Publikasi')}*")
+            lines.append(f"   Rilis: {rilis} · Katalog: {p.get('catalog_number') or '-'}")
+            if p.get("pdf_url"):
+                lines.append(f"   PDF: {p['pdf_url']}")
+            lines.append("")
+        lines.append("Angka rinci di dalam publikasi bisa dibantu petugas. Balas *ADMIN*.")
+        return RagOutcome(kind="answer", text="\n".join(lines))
+
+    # -- aksi lanjutan ---------------------------------------------------
+
+    def _compare_periods(
+        self, conversation_id: str, text: str, selection: dict[str, Any]
+    ) -> RagOutcome:
+        """query_and_compare: trend multi-periode (banding tahun)."""
+        rows = self.querier(
+            selection.get("family"), text,
+            {**selection, "_mode": "trend"},
+        ) or []
+        if len(rows) < 2:
+            return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.PERIOD_UNAVAILABLE))
+        evidence = [
+            build_evidence_from_row(r, source_label=source_label_for(selection))
+            for r in rows
+        ]
+        answer = format_trend(evidence, indicator_label=rows[0].get("indicator_name", "indikator"))
+        context = GateContext(
+            evidence=evidence, query_facts=True,
+            selection_source="active_dataset",
+            system_counts=frozenset({len(rows)}),
+        )
+        verdict = evaluate({"text": answer, "evidence_ids": [e.evidence_id for e in evidence]}, context)
+        if verdict.blocked:
+            log.warning("rag compare diblokir conv=%s: %s", conversation_id, verdict.violations)
+            return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.GATE_BLOCKED), gate_violations=verdict.violations)
+        return RagOutcome(kind="answer", text=answer, evidence_ids=[e.evidence_id for e in evidence])
+
+    def _analyze_ranking(
+        self, conversation_id: str, text: str, selection: dict[str, Any]
+    ) -> RagOutcome:
+        """analyze_existing_result: ranking per kecamatan (tertinggi/terendah)."""
+        rows = self.querier(
+            selection.get("family"), text,
+            {**selection, "_mode": "by_geography"},
+        ) or []
+        if not rows:
+            return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.GEOGRAPHY_UNAVAILABLE))
+        evidence = [
+            build_evidence_from_row(r, source_label=source_label_for(selection))
+            for r in rows
+        ]
+        ind = rows[0].get("indicator_name", "indikator")
+        period = rows[0].get("period", "")
+        unit = rows[0].get("unit") or ""
+        lines = [f"*{ind}* per kecamatan — {period}", ""]
+        for i, r in enumerate(rows[:10], 1):
+            val = r.get("value")
+            val_s = f"{val:,.0f}".replace(",", ".") if isinstance(val, (int, float, Decimal)) else str(val)
+            lines.append(f"{i}. {r.get('geography_name')}: {val_s} {unit}".rstrip())
+        lines.append("")
+        lines.append(f"Sumber: {source_label_for(selection)}")
+        answer = "\n".join(lines)
+        context = GateContext(
+            evidence=evidence, query_facts=True,
+            selection_source="active_dataset",
+            system_counts=frozenset({len(rows)}),
+        )
+        verdict = evaluate({"text": answer, "evidence_ids": [e.evidence_id for e in evidence]}, context)
+        if verdict.blocked:
+            log.warning("rag analyze diblokir conv=%s: %s", conversation_id, verdict.violations)
+            return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.GATE_BLOCKED), gate_violations=verdict.violations)
+        return RagOutcome(kind="answer", text=answer, evidence_ids=[e.evidence_id for e in evidence])
+
+    def _page_candidates(
+        self, conversation_id: str, offered: dict[str, Any]
+    ) -> RagOutcome:
+        """candidate_page: halaman berikutnya dari daftar yang sedang tampil."""
+        candidates = offered.get("candidates", [])
+        if not candidates:
+            return RagOutcome(kind="clarify", text=render_candidates_reply([], recommended_ref=None))
+        # Halaman berikut = kandidat di luar 3 pertama yang belum tampil.
+        rest = candidates[3:]
+        if not rest:
+            return RagOutcome(
+                kind="clarify",
+                text="Tidak ada kandidat tambahan. Silakan pilih dari daftar yang sudah tampil, atau balas *ADMIN*.",
+            )
+        text_out = render_candidates_reply(rest, recommended_ref=None)
+        return RagOutcome(kind="offer", text=text_out, candidate_refs=[c["display_ref"] for c in rest])
+
+    def _rerank(self, conversation_id: str, text: str) -> RagOutcome:
+        """rerank_candidates: koreksi topik dengan negasi ("bukan X, Y")."""
+        m = re.search(r"bukan\s+.+?,\s*(.+)$", text.strip(), re.IGNORECASE)
+        new_query = m.group(1) if m else text
+        offering = self._do_offer(new_query)
+        if offering and offering.get("groups"):
+            candidates = self._flatten_candidates(offering["groups"])
+            self._persist_offered(conversation_id, candidates)
+            rec = (offering.get("recommendation") or {}).get("ref")
+            text_out = "Baik, saya carikan yang dimaksud.\n\n" + render_candidates_reply(candidates, recommended_ref=rec)
+            return RagOutcome(kind="offer", text=text_out, candidate_refs=[c["display_ref"] for c in candidates])
+        return RagOutcome(kind="clarify", text=render_candidates_reply([], recommended_ref=None))

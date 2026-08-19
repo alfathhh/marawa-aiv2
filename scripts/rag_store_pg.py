@@ -147,6 +147,54 @@ def _latest_period(conn, table: str, indicator_name: str) -> str | None:
     return row["p"] if row else None
 
 
+def query_dynamic_trend(
+    conn, indicator_name: str, limit: int = 8
+) -> list[dict[str, Any]]:
+    """Trend multi-periode (query_and_compare / trend): agregat kabupaten per
+    tahun, terbaru dulu. Dipakai untuk banding periode dan 'urutkan'."""
+    rows = conn.execute(
+        """
+        SELECT %s AS indicator_name, 'Padang Pariaman'::text AS geography_name,
+               period::text AS period, sum(value) AS value,
+               min(unit) AS unit, min(unit_state) AS unit_state,
+               max(snapshot_id) AS snapshot_id
+        FROM public.bps_serving_dynamic
+        WHERE indicator_name = %s
+          AND unit_state IN ('canonical', 'known')
+          AND (category_label IN ('Total', 'Tidak ada', 'Semua') OR category_label IS NULL)
+        GROUP BY period
+        ORDER BY period DESC
+        LIMIT %s
+        """,
+        (indicator_name, indicator_name, limit),
+    ).fetchall()
+    return [dict(r) for r in rows if r.get("value") is not None]
+
+
+def query_dynamic_by_geography(
+    conn, indicator_name: str, year: str | None, limit: int = 20
+) -> list[dict[str, Any]]:
+    """Rincian per kecamatan untuk analyze_existing_result (ranking)."""
+    period = year or _latest_period(conn, "bps_serving_dynamic", indicator_name)
+    if period is None:
+        return []
+    rows = conn.execute(
+        """
+        SELECT indicator_name, geography_name, period, value, unit, unit_state, snapshot_id
+        FROM public.bps_serving_dynamic
+        WHERE indicator_name = %s AND period = %s
+          AND unit_state IN ('canonical', 'known')
+          AND (category_label IN ('Total', 'Tidak ada', 'Semua') OR category_label IS NULL)
+          -- exclude baris agregat kabupaten agar ranking murni per kecamatan
+          AND geography_name NOT ILIKE '%%kabupaten%%'
+        ORDER BY value DESC NULLS LAST
+        LIMIT %s
+        """,
+        (indicator_name, period, limit),
+    ).fetchall()
+    return [dict(r) for r in rows if r.get("value") is not None]
+
+
 def query_dynamic_kabupaten(
     conn, indicator_name: str, year: str | None
 ) -> list[dict[str, Any]]:
@@ -214,6 +262,66 @@ def query_simdasi_kabupaten(
     return [dict(r) for r in rows if r.get("value") is not None]
 
 
+def _census_topic(text: str) -> str:
+    """Kata kunci utama untuk FTS census dari teks bebas user.
+
+    Ambil token konsep pertama yang bermakna (bukan kata tanya/sambung), supaya
+    'penduduk sensus berdasarkan jenis kelamin' -> 'penduduk'.
+    """
+    stop = {
+        "berapa", "data", "sensus", "yang", "dan", "di", "ke", "dari", "untuk",
+        "berdasarkan", "menurut", "tahun", "terbaru", "jumlah", "padang",
+        "pariaman", "kabupaten", "the", "dong", "ya", "mohon", "tolong",
+    }
+    for tok in re.findall(r"[a-zA-Z]{4,}", (text or "").lower()):
+        if tok not in stop:
+            return tok
+    return "penduduk"
+
+
+def query_census_inspect(
+    conn, topic: str, year: str | None
+) -> list[dict[str, Any]]:
+    """Census inspect: cakupan dataset sensus yang cocok dengan topik (FTS),
+    BUKAN agregat angka. Census multi-dimensi + pemekaran kecamatan membuat
+    SUM naif salah — yang user butuh pertama adalah tahu data apa yang ada,
+    lalu memperjelas wilayah/dimensi (inspect_dataset, docs/18)."""
+    rows = conn.execute(
+        """
+        SELECT indicator_name, period,
+               count(DISTINCT geography_name) AS wilayah_count,
+               count(*) AS row_count,
+               max(snapshot_id) AS snapshot_id
+        FROM public.bps_serving_census
+        WHERE indicator_name ILIKE %s
+        GROUP BY indicator_name, period
+        ORDER BY period DESC NULLS LAST, row_count DESC
+        LIMIT 3
+        """,
+        (f"%{topic}%",),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def query_publication_meta(
+    conn, topic: str, year: str | None
+) -> list[dict[str, Any]]:
+    """Publication: metadata saja (judul, katalog, tanggal rilis, tautan) —
+    BUKAN angka. Angka publikasi butuh render PDF (tahap berikut)."""
+    rows = conn.execute(
+        """
+        SELECT title, catalog_number, publication_number, issn,
+               release_date, abstract, pdf_url, cover_url, snapshot_id
+        FROM public.bps_publications
+        WHERE title ILIKE %s
+        ORDER BY release_date DESC NULLS LAST
+        LIMIT 3
+        """,
+        (f"%{topic}%",),
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
 def query_serving(
     family: str | None, text: str, selection: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -226,14 +334,23 @@ def query_serving(
         return []
     m = YEAR_RE.search(text or "")
     year = m.group(1) if m else None
+    mode = selection.get("_mode")  # trend | by_geography | None
     with psycopg.connect(_dsn(), row_factory=dict_row) as conn:
         conn.execute("SET TRANSACTION READ ONLY")
         if family == "dynamic":
+            if mode == "trend":
+                return query_dynamic_trend(conn, indicator)
+            if mode == "by_geography":
+                return query_dynamic_by_geography(conn, indicator, year)
             return query_dynamic_kabupaten(conn, indicator, year)
         if family == "simdasi":
             return query_simdasi_kabupaten(conn, indicator, year)
-        # census (tanpa kolom unit) & publication: tahap berikut; fail-closed.
-        log.info("family %s belum punya querier kabupaten", family)
+        if family == "census":
+            # census: topik dari teks user (indicator_name registry bisa
+            # multi-dimensi dan tak cocok persis dengan serving.census).
+            return query_census_inspect(conn, _census_topic(text), year)
+        if family == "publication":
+            return query_publication_meta(conn, indicator, year)
         return []
 
 
