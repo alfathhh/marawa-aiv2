@@ -30,6 +30,7 @@ def _build_rag():
         from scripts.rag_store_pg import (
             PgSelectionStore,
             _dsn,
+            fetch_indicator_meta,
             load_offering_index,
             make_offer,
             query_serving,
@@ -42,6 +43,7 @@ def _build_rag():
             querier=query_serving,
             offer=make_offer(),
             offering_index=index,
+            meta=fetch_indicator_meta,
         )
         log.info("rag pipeline aktif: %d family index", len(index.get("by_family", {})))
         return rag

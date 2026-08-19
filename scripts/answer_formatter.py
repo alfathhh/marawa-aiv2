@@ -153,6 +153,53 @@ def format_single_value(
     return "\n".join(lines)
 
 
+def describe_indicator(
+    title: str,
+    *,
+    topic_name: str | None = None,
+    definition: str | None = None,
+    unit: str | None = None,
+    period_min: str | int | None = None,
+    period_max: str | int | None = None,
+    period_granularity: str | None = None,
+    geography_label: str | None = None,
+) -> str:
+    """Deskripsi indikator yang JUJUR — dibangun dari metadata terverifikasi,
+    bukan karangan model (invariant #3 berlaku juga untuk klaim kualitatif).
+
+    Hanya memakai fakta yang diserahkan: topik, definisi resmi bila ada, unit,
+    rentang periode, granularitas, cakupan wilayah. Kalau metadata kosong,
+    hasilnya kalimat netral satu baris — tidak pernah mengisi celah dengan
+    generalisasi yang terdengar pintar tapi tak bersumber.
+    """
+    parts: list[str] = []
+    # definisi resmi dipakai HANYA bila benar-benar informatif — bukan echo
+    # judul + suffix ("Jumlah Penduduk" -> "Jumlah Penduduk Menurut Jenis
+    # Kelamin" adalah parafrase yang menyesatkan, bukan definisi konsep).
+    if definition:
+        d = definition.strip().rstrip(".")
+        t = title.strip().lower()
+        dl = d.lower()
+        if dl != t and not dl.startswith(t) and len(d) > len(title) + 15:
+            parts.append(d + ".")
+    if topic_name:
+        parts.append(f"Indikator ini termasuk kelompok {topic_name}.")
+    if period_min and period_max:
+        parts.append(f"Data tersedia untuk periode {period_min}–{period_max}.")
+    elif period_max:
+        parts.append(f"Periode terbaru: {period_max}.")
+    if period_granularity:
+        gran = {"annual": "tahunan", "quarterly": "triwulanan", "monthly": "bulanan"}.get(
+            str(period_granularity).lower(), str(period_granularity)
+        )
+        parts.append(f"Frekuensi data: {gran}.")
+    if unit:
+        parts.append(f"Satuan: {unit}.")
+    if geography_label:
+        parts.append(f"Cakupan wilayah: {geography_label}.")
+    return " ".join(parts)
+
+
 def format_trend(
     rows: Sequence[Evidence],
     indicator_label: str,

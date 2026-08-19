@@ -147,119 +147,84 @@ def _latest_period(conn, table: str, indicator_name: str) -> str | None:
     return row["p"] if row else None
 
 
+# ---------------------------------------------------------------------------
+# Typed-template execution (invariant #2): SEMUA query data lewat
+# query_template_registry + bind_template. Tidak ada SQL inline untuk fakta.
+# ---------------------------------------------------------------------------
+
+def _load_template(conn, template_id: str) -> dict[str, Any]:
+    from scripts.bps_template_binder import bind_template  # noqa: F401 (re-export)
+    row = conn.execute(
+        "SELECT * FROM bps_registry.query_template_registry "
+        "WHERE template_id=%s ORDER BY template_version DESC LIMIT 1",
+        (template_id,),
+    ).fetchone()
+    if not row:
+        raise RuntimeError(f"query template {template_id} tidak terdaftar")
+    return dict(row)
+
+
+def _run_template(
+    conn, template_id: str, params: dict[str, Any]
+) -> list[dict[str, Any]]:
+    """Bind + jalankan typed template. Row limit & validasi dari binder."""
+    from scripts.bps_template_binder import bind_template
+
+    tpl = _load_template(conn, template_id)
+    sql, bound = bind_template(tpl, params)
+    timeout_ms = int(tpl.get("timeout_ms") or 5000)
+    conn.execute(f"SET LOCAL statement_timeout = {timeout_ms}")
+    rows = conn.execute(sql, bound).fetchall()
+    return [dict(r) for r in rows]
+
+
 def query_dynamic_trend(
     conn, indicator_name: str, limit: int = 8
 ) -> list[dict[str, Any]]:
-    """Trend multi-periode (query_and_compare / trend): agregat kabupaten per
-    tahun, terbaru dulu. Dipakai untuk banding periode dan 'urutkan'."""
-    rows = conn.execute(
-        """
-        SELECT %s AS indicator_name, 'Padang Pariaman'::text AS geography_name,
-               period::text AS period, sum(value) AS value,
-               min(unit) AS unit, min(unit_state) AS unit_state,
-               max(snapshot_id) AS snapshot_id
-        FROM public.bps_serving_dynamic
-        WHERE indicator_name = %s
-          AND unit_state IN ('canonical', 'known')
-          AND (category_label IN ('Total', 'Tidak ada', 'Semua') OR category_label IS NULL)
-        GROUP BY period
-        ORDER BY period DESC
-        LIMIT %s
-        """,
-        (indicator_name, indicator_name, limit),
-    ).fetchall()
-    return [dict(r) for r in rows if r.get("value") is not None]
+    """Trend multi-periode — typed template dynamic_kabupaten_trend."""
+    rows = _run_template(conn, "dynamic_kabupaten_trend", {"indicator_name": indicator_name})
+    return [r for r in rows if r.get("value") is not None]
 
 
 def query_dynamic_by_geography(
     conn, indicator_name: str, year: str | None, limit: int = 20
 ) -> list[dict[str, Any]]:
-    """Rincian per kecamatan untuk analyze_existing_result (ranking)."""
-    period = year or _latest_period(conn, "bps_serving_dynamic", indicator_name)
-    if period is None:
-        return []
-    rows = conn.execute(
-        """
-        SELECT indicator_name, geography_name, period, value, unit, unit_state, snapshot_id
-        FROM public.bps_serving_dynamic
-        WHERE indicator_name = %s AND period = %s
-          AND unit_state IN ('canonical', 'known')
-          AND (category_label IN ('Total', 'Tidak ada', 'Semua') OR category_label IS NULL)
-          -- exclude baris agregat kabupaten agar ranking murni per kecamatan
-          AND geography_name NOT ILIKE '%%kabupaten%%'
-        ORDER BY value DESC NULLS LAST
-        LIMIT %s
-        """,
-        (indicator_name, period, limit),
-    ).fetchall()
-    return [dict(r) for r in rows if r.get("value") is not None]
+    """Ranking per kecamatan — typed template dynamic_by_kecamatan."""
+    rows = _run_template(conn, "dynamic_by_kecamatan", {
+        "indicator_name": indicator_name,
+        "period": year,
+    })
+    return [r for r in rows if r.get("value") is not None]
 
 
 def query_dynamic_kabupaten(
     conn, indicator_name: str, year: str | None
 ) -> list[dict[str, Any]]:
-    """Agregasi kabupaten: SUM atas semua kecamatan, period & unit konsisten.
+    """Agregat kabupaten — typed template dynamic_kabupaten_point.
 
-    Hanya baris unit publishable (canonical/known) yang dijumlahkan; baris
+    SUM per kecamatan, filter category 'Total', unit publishable. Baris
     unknown_review dikecualikan agar total tidak tercampur satuan tak jelas.
     """
-    period = year or _latest_period(conn, "bps_serving_dynamic", indicator_name)
-    if period is None:
-        return []
-    rows = conn.execute(
-        """
-        SELECT %s AS indicator_name,
-               'Padang Pariaman'::text AS geography_name,
-               %s::text AS period,
-               sum(value) AS value,
-               min(unit) AS unit,
-               min(unit_state) AS unit_state,
-               max(snapshot_id) AS snapshot_id,
-               count(*) AS kecamatan_count
-        FROM public.bps_serving_dynamic
-        WHERE indicator_name = %s
-          AND period = %s
-          AND unit_state IN ('canonical', 'known')
-          -- Baris 'Total' adalah agregat resmi; menjumlahkan Laki+Perempuan+Total
-          -- akan menghitung populasi tiga kali. Ambil Total saja. Bila tidak ada
-          -- baris Total (indikator tanpa rincian), jatuh ke baris tanpa kategori.
-          AND (category_label IN ('Total', 'Tidak ada', 'Semua') OR category_label IS NULL)
-        GROUP BY unit
-        ORDER BY kecamatan_count DESC
-        LIMIT 1
-        """,
-        (indicator_name, period, indicator_name, period),
-    ).fetchall()
-    return [dict(r) for r in rows if r.get("value") is not None]
+    rows = _run_template(conn, "dynamic_kabupaten_point", {
+        "indicator_name": indicator_name,
+        "period": year,
+    })
+    return [r for r in rows if r.get("value") is not None]
 
 
 def query_simdasi_kabupaten(
     conn, indicator_name: str, year: str | None
 ) -> list[dict[str, Any]]:
-    """Simdasi: baris row_role='kabupaten' adalah agregat resmi — ambil langsung,
-    JANGAN dijumlahkan dari kecamatan (risiko double-count rincian).
+    """Simdasi kabupaten — typed template simdasi_kabupaten_point.
 
-    indicator_name di simdasi sering gabungan multi-indikator dalam satu judul
-    ("Jumlah Penduduk, Laju Pertumbuhan, ...") — cocokkan longgar (ILIKE).
+    row_role='kabupaten' adalah agregat resmi; JANGAN dijumlahkan dari
+    kecamatan (risiko double-count rincian). period bertipe integer.
     """
-    period = year or _latest_period(conn, "bps_serving_simdasi", indicator_name)
-    if period is None:
-        return []
-    rows = conn.execute(
-        """
-        SELECT indicator_name, geography_name, period, value, unit,
-               unit_state, snapshot_id
-        FROM public.bps_serving_simdasi
-        WHERE indicator_name ILIKE %s
-          AND period = %s
-          AND row_role = 'kabupaten'
-          AND unit_state IN ('known', 'canonical')
-        ORDER BY value DESC NULLS LAST
-        LIMIT 1
-        """,
-        (f"%{indicator_name}%", period),
-    ).fetchall()
-    return [dict(r) for r in rows if r.get("value") is not None]
+    rows = _run_template(conn, "simdasi_kabupaten_point", {
+        "indicator_name": indicator_name,
+        "period": int(year) if year else None,
+    })
+    return [r for r in rows if r.get("value") is not None]
 
 
 def _census_topic(text: str) -> str:
@@ -320,6 +285,38 @@ def query_publication_meta(
         (f"%{topic}%",),
     ).fetchall()
     return [dict(r) for r in rows]
+
+
+def fetch_indicator_meta(family: str, indicator_name: str) -> dict[str, Any]:
+    """Metadata indikator dari dataset_registry (+ variable utk dynamic) untuk
+    membangun deskripsi jujur. Read-only; kosong bila tak ketemu."""
+    meta: dict[str, Any] = {}
+    with psycopg.connect(_dsn(), row_factory=dict_row) as conn:
+        conn.execute("SET TRANSACTION READ ONLY")
+        row = conn.execute(
+            """
+            SELECT title, summary, topic_name, period_granularity,
+                   period_min, period_max, answerability
+            FROM bps_registry.dataset_registry
+            WHERE source_family = %s AND active AND title = %s
+            ORDER BY period_max DESC NULLS LAST
+            LIMIT 1
+            """,
+            (family, indicator_name),
+        ).fetchone()
+        if row:
+            meta.update(dict(row))
+        if family == "dynamic":
+            v = conn.execute(
+                "SELECT definition, notes, subject_name, unit_canonical "
+                "FROM public.bps_dynamic_variables WHERE title=%s LIMIT 1",
+                (indicator_name,),
+            ).fetchone()
+            if v:
+                meta.setdefault("definition", v.get("definition"))
+                meta.setdefault("subject_name", v.get("subject_name"))
+                meta.setdefault("unit_canonical", v.get("unit_canonical"))
+    return meta
 
 
 def query_serving(

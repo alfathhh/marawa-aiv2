@@ -31,6 +31,7 @@ from typing import Any, Callable
 
 from scripts.answer_formatter import (
     Candidate,
+    describe_indicator,
     format_candidates,
     format_comparison,
     format_single_value,
@@ -142,6 +143,7 @@ class RagPipeline:
       store    — mengetahui kandidat terpilih terakhir per conversation.
       offer    — callable(index, text) -> offering dict (FTS registry).
       querier  — callable(family, text, selection) -> list[row] serving view.
+      meta     — callable(family, indicator_name) -> metadata deskripsi (opsional).
     """
 
     def __init__(
@@ -151,11 +153,34 @@ class RagPipeline:
         querier: Callable[..., list[dict[str, Any]]] | None,
         offer: Callable[..., dict[str, Any]] | None = None,
         offering_index: dict[str, Any] | None = None,
+        meta: Callable[..., dict[str, Any]] | None = None,
     ) -> None:
         self.store = store
         self.querier = querier
         self._offer = offer
         self._index = offering_index
+        self._meta = meta
+
+    def _describe(self, selection: dict[str, Any], sample_row: dict[str, Any]) -> str:
+        """Deskripsi indikator dari metadata — diletakkan SEBELUM angka agar
+        jawaban tidak kering. Kosong bila meta fetcher tak diset (test)."""
+        if self._meta is None:
+            return ""
+        try:
+            m = self._meta(selection.get("family"), selection.get("indicator_name", "")) or {}
+        except Exception:
+            return ""
+        desc = describe_indicator(
+            selection.get("indicator_name", ""),
+            topic_name=m.get("topic_name") or m.get("subject_name"),
+            definition=m.get("definition"),
+            unit=sample_row.get("unit") or m.get("unit_canonical"),
+            period_min=m.get("period_min"),
+            period_max=m.get("period_max"),
+            period_granularity=m.get("period_granularity"),
+            geography_label=sample_row.get("geography_name"),
+        )
+        return (desc + "\n\n") if desc else ""
 
     def _do_offer(self, text: str) -> dict[str, Any] | None:
         if self._offer is None or self._index is None:
@@ -308,7 +333,7 @@ class RagPipeline:
             build_evidence_from_row(r, source_label=source_label_for(selection))
             for r in rows
         ]
-        answer = format_single_value(
+        answer = self._describe(selection, rows[0]) + format_single_value(
             evidence[0],
             indicator_label=rows[0].get("indicator_name", "indikator"),
         )
@@ -397,7 +422,7 @@ class RagPipeline:
             build_evidence_from_row(r, source_label=source_label_for(selection))
             for r in rows
         ]
-        answer = format_trend(evidence, indicator_label=rows[0].get("indicator_name", "indikator"))
+        answer = self._describe(selection, rows[0]) + format_trend(evidence, indicator_label=rows[0].get("indicator_name", "indikator"))
         return self._gate_or_abstain(conversation_id, answer, evidence, selection)
 
     def _compare_two_years(
@@ -410,7 +435,7 @@ class RagPipeline:
         older, newer = (rows_a[0], rows_b[0]) if year_a <= year_b else (rows_b[0], rows_a[0])
         ev_old = build_evidence_from_row(older, source_label=source_label_for(selection))
         ev_new = build_evidence_from_row(newer, source_label=source_label_for(selection))
-        answer = format_comparison(ev_old, ev_new, indicator_label=newer.get("indicator_name", "indikator"))
+        answer = self._describe(selection, newer) + format_comparison(ev_old, ev_new, indicator_label=newer.get("indicator_name", "indikator"))
         return self._gate_or_abstain(conversation_id, answer, [ev_old, ev_new], selection)
 
     def _gate_or_abstain(
