@@ -126,9 +126,15 @@ def build_evidence_from_row(row: dict[str, Any], source_label: str) -> Evidence:
 
 
 def render_candidates_reply(
-    candidates: list[dict[str, Any]], recommended_ref: str | None
+    candidates: list[dict[str, Any]], recommended_ref: str | None,
+    csa_labeler=None,
 ) -> str:
-    """Fase OFFER: daftar kandidat via deterministic formatter (docs/18 §3)."""
+    """Fase OFFER: daftar kandidat via deterministic formatter (docs/18 §3).
+
+    csa_labeler (opsional): callable(title) -> label topik CSA. Bila tersedia,
+    kandidat diberi konteks topik resmi — memperkaya FTS leksikal tanpa
+    menggantikannya.
+    """
     objs = [
         Candidate(
             ref=c.get("display_ref") or c.get("ref", "?"),
@@ -138,7 +144,13 @@ def render_candidates_reply(
         )
         for c in candidates
     ]
-    return format_candidates(objs, recommended_ref=recommended_ref)
+    text = format_candidates(objs, recommended_ref=recommended_ref)
+    # CSA label: satu baris konteks topik di atas daftar (bila tersedia)
+    if csa_labeler and objs:
+        label = csa_labeler(objs[0].title)
+        if label:
+            text = f"Topik: {label}\n\n" + text
+    return text
 
 
 class RagPipeline:
@@ -159,12 +171,15 @@ class RagPipeline:
         offer: Callable[..., dict[str, Any]] | None = None,
         offering_index: dict[str, Any] | None = None,
         meta: Callable[..., dict[str, Any]] | None = None,
+        csa_labeler: Callable[..., str | None] | None = None,
     ) -> None:
         self.store = store
         self.querier = querier
         self._offer = offer
         self._index = offering_index
         self._meta = meta
+        # csa_labeler opsional: label topik CSA untuk kandidat (None = mati).
+        self._csa_labeler = csa_labeler
 
     def _describe(self, selection: dict[str, Any], sample_row: dict[str, Any]) -> str:
         """Deskripsi indikator dari metadata — diletakkan SEBELUM angka agar
@@ -273,7 +288,7 @@ class RagPipeline:
                     rec = (offering.get("recommendation") or {}).get("ref")
                     return RagOutcome(
                         kind="offer",
-                        text=render_candidates_reply(candidates, recommended_ref=rec),
+                        text=render_candidates_reply(candidates, recommended_ref=rec, csa_labeler=self._csa_labeler),
                         candidate_refs=[c["display_ref"] for c in candidates],
                     )
                 self._clear_selection(conversation_id)
@@ -294,7 +309,7 @@ class RagPipeline:
                 rec = candidates[0]["display_ref"] if candidates else None
                 return RagOutcome(
                     kind="offer",
-                    text=render_candidates_reply(candidates, recommended_ref=rec),
+                    text=render_candidates_reply(candidates, recommended_ref=rec, csa_labeler=self._csa_labeler),
                     candidate_refs=[c["display_ref"] for c in candidates],
                 )
 
@@ -328,7 +343,7 @@ class RagPipeline:
                 ym = re.search(r"\b(19\d{2}|20\d{2})\b", text)
                 self._persist_offered(conversation_id, candidates, goal_year=ym.group(1) if ym else None)
                 rec = candidates[0]["display_ref"] if candidates else None
-                text_out = render_candidates_reply(candidates, recommended_ref=rec)
+                text_out = render_candidates_reply(candidates, recommended_ref=rec, csa_labeler=self._csa_labeler)
                 return RagOutcome(
                     kind="offer",
                     text=text_out,

@@ -300,6 +300,58 @@ def query_publication_meta(
     return [dict(r) for r in rows]
 
 
+def csa_label_for_title(title: str) -> str | None:
+    """Label topik CSA untuk judul kandidat — FTS atas bps_csa_subjects.
+
+    Mengembalikan judul subjek CSA yang paling cocok, atau None bila CSA belum
+    ter-ingest / tidak ada yang cocok. Dipakai RAG untuk memberi konteks topik
+    resmi pada kandidat (bukan menggantikan FTS, hanya memperkaya label).
+    """
+    try:
+        with psycopg.connect(_dsn(), row_factory=dict_row) as conn:
+            conn.execute("SET TRANSACTION READ ONLY")
+            row = conn.execute(
+                """
+                SELECT title FROM public.bps_csa_subjects
+                WHERE to_tsvector('indonesian', title) @@ plainto_tsquery('indonesian', %s)
+                ORDER BY ts_rank(to_tsvector('indonesian', title), plainto_tsquery('indonesian', %s)) DESC
+                LIMIT 1
+                """,
+                (title, title),
+            ).fetchone()
+        return row["title"] if row else None
+    except Exception:
+        return None  # tabel CSA belum ada -> None (fitur opsional)
+
+
+def csa_family_for_title(title: str) -> str | None:
+    """Family RAG (dynamic/simdasi) untuk judul — via tabel CSA yang cocok.
+
+    Mengembalikan family dari tablesource tabel CSA yang judulnya paling mirip,
+    atau None bila CSA belum ter-ingest. Dipakai RAG untuk memprioritaskan
+    kandidat berdasarkan taksonomi resmi, bukan hanya skor FTS leksikal.
+    """
+    try:
+        with psycopg.connect(_dsn(), row_factory=dict_row) as conn:
+            conn.execute("SET TRANSACTION READ ONLY")
+            row = conn.execute(
+                """
+                SELECT t.tablesource
+                FROM public.bps_csa_tables t
+                WHERE to_tsvector('indonesian', t.title) @@ plainto_tsquery('indonesian', %s)
+                ORDER BY ts_rank(to_tsvector('indonesian', t.title), plainto_tsquery('indonesian', %s)) DESC
+                LIMIT 1
+                """,
+                (title, title),
+            ).fetchone()
+        if not row:
+            return None
+        from workers.ingestion.bps_csa import csa_family
+        return csa_family(row["tablesource"])
+    except Exception:
+        return None
+
+
 def fetch_indicator_meta(family: str, indicator_name: str) -> dict[str, Any]:
     """Metadata indikator dari dataset_registry (+ variable utk dynamic) untuk
     membangun deskripsi jujur. Read-only; kosong bila tak ketemu."""
