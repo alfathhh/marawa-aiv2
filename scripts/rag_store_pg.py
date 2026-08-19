@@ -94,10 +94,14 @@ class PgSelectionStore:
             ).fetchone()
         if not row:
             return None
-        return {"candidates": row["offered_payload"]}
+        payload = row["offered_payload"]
+        # payload bisa list lama (kandidat saja) atau dict baru (candidates+goal_year)
+        if isinstance(payload, dict):
+            return payload
+        return {"candidates": payload, "goal_year": None}
 
     def set_offered(
-        self, conversation_id: str, candidates: list[dict[str, Any]]
+        self, conversation_id: str, payload: Any
     ) -> None:
         with psycopg.connect(self._dsn) as conn:
             conn.execute(
@@ -109,7 +113,16 @@ class PgSelectionStore:
                 DO UPDATE SET offered_payload = EXCLUDED.offered_payload,
                               updated_at = now()
                 """,
-                (conversation_id, Jsonb(candidates)),
+                (conversation_id, Jsonb(payload)),
+            )
+            conn.commit()
+
+    def clear_selection(self, conversation_id: str) -> None:
+        """Hapus seleksi + daftar offered (ganti topik / reset)."""
+        with psycopg.connect(self._dsn) as conn:
+            conn.execute(
+                "DELETE FROM public.rag_selection WHERE conversation_id=%s",
+                (conversation_id,),
             )
             conn.commit()
 
