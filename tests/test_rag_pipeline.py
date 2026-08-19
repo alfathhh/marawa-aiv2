@@ -156,3 +156,37 @@ def test_agent_runtime_answers_goal_via_rag_without_llm() -> None:
     assert len(outbox) == 1
     assert "D1" in outbox[0].body  # kandidat ditawarkan, bukan angka karangan
     assert store.conversations[cid].agent_run_active is False
+
+
+def test_simdasi_querier_kabupaten_live() -> None:
+    """Querier simdasi mengambil baris row_role=kabupaten (agregat resmi)."""
+    pytest.importorskip("psycopg")
+    import os
+    if not os.environ.get("MARAWA_TEST_DSN"):
+        pytest.skip("MARAWA_TEST_DSN tidak diset")
+    import sys
+    sys.path.insert(0, ".")
+    from scripts.rag_store_pg import query_serving
+    rows = query_serving("simdasi", "penduduk 2025", {"family": "simdasi", "indicator_name": "Jumlah Penduduk"})
+    assert rows, "simdasi harus mengembalikan baris kabupaten"
+    r = rows[0]
+    assert r["value"] is not None and r["unit_state"] in ("known", "canonical")
+
+
+def test_security_headers_present_on_admin() -> None:
+    """Middleware header keamanan wajib ada di setiap respons (audit 19/8)."""
+    from fastapi.testclient import TestClient
+    from scripts.app import app
+    c = TestClient(app)
+    r = c.get("/admin")
+    assert r.headers.get("x-frame-options") == "DENY"
+    assert r.headers.get("x-content-type-options") == "nosniff"
+    assert "frame-ancestors" in (r.headers.get("content-security-policy") or "")
+
+def test_root_redirects_to_admin() -> None:
+    from fastapi.testclient import TestClient
+    from scripts.app import app
+    c = TestClient(app, follow_redirects=False)
+    r = c.get("/")
+    assert r.status_code in (302, 307)
+    assert r.headers.get("location") == "/admin"

@@ -185,6 +185,35 @@ def query_dynamic_kabupaten(
     return [dict(r) for r in rows if r.get("value") is not None]
 
 
+def query_simdasi_kabupaten(
+    conn, indicator_name: str, year: str | None
+) -> list[dict[str, Any]]:
+    """Simdasi: baris row_role='kabupaten' adalah agregat resmi — ambil langsung,
+    JANGAN dijumlahkan dari kecamatan (risiko double-count rincian).
+
+    indicator_name di simdasi sering gabungan multi-indikator dalam satu judul
+    ("Jumlah Penduduk, Laju Pertumbuhan, ...") — cocokkan longgar (ILIKE).
+    """
+    period = year or _latest_period(conn, "bps_serving_simdasi", indicator_name)
+    if period is None:
+        return []
+    rows = conn.execute(
+        """
+        SELECT indicator_name, geography_name, period, value, unit,
+               unit_state, snapshot_id
+        FROM public.bps_serving_simdasi
+        WHERE indicator_name ILIKE %s
+          AND period = %s
+          AND row_role = 'kabupaten'
+          AND unit_state IN ('known', 'canonical')
+        ORDER BY value DESC NULLS LAST
+        LIMIT 1
+        """,
+        (f"%{indicator_name}%", period),
+    ).fetchall()
+    return [dict(r) for r in rows if r.get("value") is not None]
+
+
 def query_serving(
     family: str | None, text: str, selection: dict[str, Any]
 ) -> list[dict[str, Any]]:
@@ -201,7 +230,9 @@ def query_serving(
         conn.execute("SET TRANSACTION READ ONLY")
         if family == "dynamic":
             return query_dynamic_kabupaten(conn, indicator, year)
-        # simdasi/census/publication: tahap berikut; saat ini fail-closed.
+        if family == "simdasi":
+            return query_simdasi_kabupaten(conn, indicator, year)
+        # census (tanpa kolom unit) & publication: tahap berikut; fail-closed.
         log.info("family %s belum punya querier kabupaten", family)
         return []
 

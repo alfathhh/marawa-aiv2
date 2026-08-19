@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, Response
 from pydantic import BaseModel, Field
 
 from scripts.answer_gate import (
@@ -356,6 +356,38 @@ def get_store() -> Store:
 app = FastAPI(title="MARAWA AI — Runtime Wiring")
 
 
+@app.middleware("http")
+async def security_headers(request, call_next):
+    """Header keamanan untuk SEMUA respons (dashboard + API).
+
+    Audit 2026-08-19: permukaan HTTPS tanpa satu pun header pertahanan —
+    /admin bisa di-iframe (clickjacking), tidak ada HSTS, tidak ada
+    X-Content-Type-Options. Disetel di sini agar berlaku ke setiap route,
+    tidak bergantung pada konfigurasi Caddy yang bisa berubah.
+    """
+    resp = await call_next(request)
+    resp.headers["X-Frame-Options"] = "DENY"
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=()"
+    # HSTS hanya bermakna lewat HTTPS; Caddy terminate TLS lalu forward.
+    # Hormati X-Forwarded-Proto karena di balik proxy scheme terlihat http.
+    proto = request.headers.get("x-forwarded-proto", request.url.scheme)
+    if proto == "https":
+        resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # CSP ketat tapi tetap mengizinkan dashboard satu-file (inline script/style).
+    # API JSON tidak memerlukan script; default-src 'none' aman utk non-HTML.
+    if request.url.path.startswith("/admin") and request.method == "GET":
+        resp.headers["Content-Security-Policy"] = (
+            "default-src 'self'; script-src 'self' 'unsafe-inline'; "
+            "style-src 'self' 'unsafe-inline'; img-src 'self' data:; "
+            "connect-src 'self'; frame-ancestors 'none'; base-uri 'self'"
+        )
+    else:
+        resp.headers["Content-Security-Policy"] = "default-src 'none'; frame-ancestors 'none'"
+    return resp
+
+
 @app.on_event("startup")
 def fail_closed_production_startup() -> None:
     """A production service with missing auth/webhook secrets must not boot."""
@@ -520,7 +552,15 @@ def admin_session(admin: AdminIdentity = Depends(current_admin)) -> dict[str, An
     return {"admin_id": admin.admin_id, "role": admin.role}
 
 
+@app.get("/")
+@app.head("/")
+def root_redirect() -> RedirectResponse:
+    """Root kosong -> dashboard. Audit 2026-08-19: / mengembalikan 404."""
+    return RedirectResponse(url="/admin", status_code=302)
+
+
 @app.get("/admin")
+@app.head("/admin")
 def admin_dashboard() -> FileResponse:
     """Panel admin satu-file (apps/dashboard/index.html); auth via Bearer di API."""
     return FileResponse(ROOT / "apps" / "dashboard" / "index.html")
