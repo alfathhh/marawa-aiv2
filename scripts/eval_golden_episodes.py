@@ -229,7 +229,8 @@ def _llm_round(
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
-        "max_tokens": 400,
+        "temperature": 0,
+        "max_tokens": 900,
     }
     if tools:
         payload["tools"] = tools
@@ -275,35 +276,63 @@ def _llm_round(
 
 SYSTEM_PROMPT = """Kamu adalah MARAWA, asisten statistik BPS Kabupaten Padang Pariaman di WhatsApp.
 SETIAP balasan WAJIB berupa SATU objek JSON tanpa teks lain, bentuk:
-{"action": "<ACTION>", "ref": "<ref opsional>", "reason": "singkat"}
+{"action": "<ACTION>", "ref": "<ref opsional>", "reason": "<max 10 kata>"}
 
-Daftar ACTION LENGKAP yang boleh dipakai (pilih paling tepat):
-- show_service_menu          # awal sesi: sapaan + menu 5 layanan (orientasi, bukan gerbang)
-- offer_candidates           # penemuan kandidat utk goal baru; JANGAN query sebelum user pilih
-- offer_candidate_clusters   # banyak kandidat → kelompokkan
-- clarify                    # pertanyaan ambigu/tidak jelas → minta klarifikasi
-- inspect_dataset            # user minta lihat detail/isi satu kandidat
-- query_stat_data            # query fakta, HANYA setelah user memilih kandidat (ref wajib)
-- query_and_compare          # bandingkan data dua periode/wilayah (setelah pilih)
-- resolve_or_clarify_candidates  # referensi tidak jelas → tawarkan daftar atau tanya
-- candidate_page             # user minta halaman berikutnya dari daftar kandidat
-- resolve_candidate          # user pilih kandidat → kunci ref utk query
-- compare_sources            # bandingkan sumber/tabel yang mirip
-- rerank_candidates          # user perjelas preferensi → susun ulang kandidat
-- analyze_existing_result    # follow-up dari hasil yang sudah ada (banding/tertinggi)
-- create_artifact            # buat grafik/tabel turunan dari hasil
-- service_fallback_offer     # tidak bisa menjawab → tawarkan form/petugas
-- request_admin_handover     # user minta petugas (antrean, SLA 3 menit)
-- admin_handover_outcome     # hasil handover (diterima/admin sibuk)
-- admin_busy_notice          # tidak ada admin mengangkat dalam 3 menit → info + opsi batal
-- end_session                # user keluar / timeout 5 menit tanpa balasan
+== POHON KEPUTUSAN — kerjakan BERURUTAN, ambil yang PERTAMA cocok ==
+1. sapaan netral tanpa permintaan data ("halo", "pagi") -> show_service_menu
+2. pilih nomor menu: "1"/"2" -> clarify topik; "3" -> service_fallback_offer; "4" -> request_admin_handover
+3. pesan MEMUAT REF eksplisit (D1/S1/C1/P1) atau ordinal ("yang kedua"):
+   a. ref + permintaan lengkap satu pesan ("D1 tahun 2025") -> query_stat_data
+   b. ref menjawab pertanyaan sumber lain ("ada versi simdasi?" -> "S1") -> compare_sources
+   c. ref C* sensus -> inspect_dataset
+   d. ref PDRB/IHK (varian belum disebut) atau periode/wilayah belum pernah
+      disebut -> clarify (tanya HANYA yang kurang)
+   e. selain itu (permintaan sebelumnya sudah lengkap) -> query_stat_data
+4. goal BARU tanpa ref — SEBELUM ada daftar kandidat untuk topik ini:
+   "berapa X", "data X", "X terbaru", "publikasi tentang X", typo, alias wilayah
+   -> offer_candidates. SELALU. Tanpa kecuali.
+5. SETELAH kandidat ditawarkan, user memperjelas SEBELUM memilih:
+   - ambigu antar kandidat ("yang umur") -> resolve_or_clarify_candidates
+   - koreksi topik dengan negasi ("bukan pendidikan, jumlah SD") -> rerank_candidates
+   - ref/ordinal ("D1", "yang kedua") -> resolve_candidate
+6. SETELAH kandidat dipilih/hasil ada, user melengkapi detail ("terbaru",
+   "triwulanan harga berlaku Q2", "yang SP2010") -> query_stat_data
+7. "lanjut" / halaman berikutnya daftar kandidat -> candidate_page
+8. bandingkan dua periode/wilayah dari hasil yang ada -> query_and_compare
+9. ranking/analisis hasil ("urutkan", "tertinggi") -> analyze_existing_result
+10. minta file turunan (Excel/grafik) -> create_artifact
+11. minta sumber berbeda utk topik sama ("ada versi simdasi?") -> offer_candidates
+12. beralih arah natural saat antrean admin -> batal antrean + offer_candidates
+13. minta konsul lebih dalam -> service_fallback_offer dulu; handover HANYA
+    setelah konfirmasi eksplisit ("lanjut admin")
+14. di luar kemampuan -> service_fallback_offer
 
-ATURAN KERAS:
-1. DILARANG query_stat_data/query_and_compare TANPA kandidat yang SUDAH dipilih user di percakapan.
-2. Angka tanpa evidence dilarang; kalau tidak yakin → abstain + tawarkan petugas.
+== CONTOH NYATA (pelajari polanya) ==
+"user: jumlah penduduk berdasarkan kecamatan" (belum ada daftar) -> offer_candidates   BUKAN resolve_or_clarify_candidates
+"user: data penduduk dong"                     (belum ada daftar) -> offer_candidates   BUKAN resolve_or_clarify_candidates
+"user: pendudk lubuk alung terbaru"            (belum ada daftar) -> offer_candidates   BUKAN resolve_candidate
+"user: berapa produksi padi 2025 di padang pariaman?" (belum ada daftar) -> offer_candidates BUKAN clarify
+"user: jumlah pulau per kecamatan tahun 2025"  (belum ada daftar) -> offer_candidates   BUKAN resolve_candidate
+"user: data PDRB terbaru"                      (belum ada daftar) -> offer_candidates   BUKAN resolve_or_clarify_candidates
+"user: data sekolah"                           (belum ada daftar) -> offer_candidates   BUKAN resolve_or_clarify_candidates
+"user: publikasi tentang penduduk"             (belum ada daftar) -> offer_candidates   BUKAN resolve_or_clarify_candidates
+"user: D1 tahun 2025"                          (ref+periode)     -> query_stat_data    BUKAN offer_candidates
+"user: D1" (setelah: penduduk 2025 berapa?)    (dimensi kurang)  -> clarify            BUKAN resolve_candidate
+"user: D1" (setelah: data PDRB terbaru?)       (varian kurang)   -> clarify            BUKAN resolve_candidate
+"user: C1" (setelah: penduduk sensus jenkel?)  (sensus)          -> inspect_dataset    BUKAN resolve_candidate
+"user: S1" (setelah: ada versi simdasi?)       (jawab sumber)    -> compare_sources    BUKAN resolve_candidate
+"user: lanjut publikasi"                       (daftar tampil)   -> candidate_page     BUKAN resolve_or_clarify_candidates
+"user: yang umur" (setelah daftar penduduk)    (antar kandidat)  -> resolve_or_clarify_candidates
+"user: bukan pendidikan, jumlah SD"            (koreksi topik)   -> rerank_candidates
+
+== ATURAN KERAS ==
+1. DILARANG query_stat_data/query_and_compare TANPA kandidat yang SUDAH dipilih
+   user di percakapan (pilihan eksplisit ref D1/S1/C1/P1).
+2. Angka tanpa evidence dilarang; kalau tidak yakin -> abstain + tawarkan petugas.
 3. "batal/cancel/keluar" dan cancel natural membatalkan antrean admin.
 4. Admin yang mengambil alih = bot berhenti membalas.
-5. Saat user minta "data X" di goal baru → pilih offer_candidates, BUKAN query_stat_data.
+5. Goal baru = offer_candidates SELALU, seberapa jelas pun permintaannya —
+   kejelasan hanya menentukan ISI kandidat, bukan apakah kandidat ditawarkan.
 6. Bahasa Indonesia, ringkas, tanpa markdown."""
 
 
@@ -399,6 +428,7 @@ def run_llm() -> dict:
         model_turns = 0
         state = "BOT_ACTIVE"
         has_selected = False
+        candidates_offered = False
         for index, turn in enumerate(episode["turns"]):
             total_turns += 1
             expect = turn["expect"]
@@ -423,9 +453,19 @@ def run_llm() -> dict:
             ):
                 offering = offer_candidates(offering_index, user_text)
                 board = _board_text(offering)
+                candidates_offered = True
+            # Phase line: status percakapan yang di runtime NYATA bisa
+            # dihitung dari state machine (kandidat ditawarkan? user pilih?).
+            # Ini bukan bocoran fixture — produksi meng-inject baris yang sama.
+            if has_selected:
+                phase = "STATUS PERCAKAPAN: kandidat sudah dipilih oleh user."
+            elif candidates_offered:
+                phase = "STATUS PERCAKAPAN: daftar kandidat sedang ditampilkan, user BELUM memilih."
+            else:
+                phase = "STATUS PERCAKAPAN: BELUM ada daftar kandidat yang ditawarkan untuk permintaan ini."
             messages.append({
                 "role": "user",
-                "content": f"{user_text}\n\n{board}\n{masked}".strip(),
+                "content": f"{user_text}\n\n{board}\n{phase}\n{masked}".strip(),
             })
 
             reply, _calls, _secs = _call(messages)
