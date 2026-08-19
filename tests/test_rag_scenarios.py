@@ -372,8 +372,9 @@ ADVERSARIAL: list[Scenario] = [
     ]),
     Scenario("ref_valid_tapi_tak_ada", [
         Turn("berapa penduduk?", expect_kind="offer"),
-        # D99 adalah ref valid tapi tak ada di daftar -> clarify eksplisit.
-        Turn("D99", expect_kind="clarify", must_contain=["tidak ada di daftar"]),
+        # D99 valid tapi tak ada di daftar -> daftar ditampilkan lagi (offer),
+        # user tinggal pilih yang benar. Lebih berguna dari clarify kosong.
+        Turn("D99", expect_kind="offer", must_contain=["tidak ada di daftar"]),
     ]),
     Scenario("angka_raksasa_di_input", [
         Turn("berapa penduduk tahun 999999999?", expect_kind="offer"),

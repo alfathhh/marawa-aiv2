@@ -205,14 +205,22 @@ class RagPipeline:
         offered = self._current_offered(conversation_id)
         selection = self._current_selection(conversation_id)
 
-        # (0) REF TAK DIKENAL saat ada daftar ditawarkan -> clarify, jangan passthrough.
+        # (0) REF TAK DIKENAL saat ada daftar ditawarkan -> tampilkan daftar lagi
+        #     (lebih berguna dari clarify kosong — user tinggal pilih yang ada).
         if offered and selection is None:
             ref = self._extract_ref(text)
             if ref and self._pick_from_offered(offered, ref) is None:
+                candidates = offered.get("candidates") or []
+                if candidates:
+                    return RagOutcome(
+                        kind="offer",
+                        text=(f'Kode "{ref}" tidak ada di daftar. Ini yang tersedia:\n\n'
+                              + render_candidates_reply(candidates, recommended_ref=None)),
+                        candidate_refs=[c.get("display_ref") for c in candidates],
+                    )
                 return RagOutcome(
                     kind="clarify",
-                    text=(f'Kode "{ref}" tidak ada di daftar. Pilih dari kandidat '
-                          "yang tampil, atau sebutkan ulang topiknya."),
+                    text=(f'Kode "{ref}" tidak ada. Sebutkan ulang topiknya.'),
                 )
 
         # (1b) aksi lanjutan pada daftar yang ditawarkan (paging / rerank).
@@ -274,6 +282,22 @@ class RagPipeline:
                     text=render_candidates_reply([], recommended_ref=None),
                 )
 
+        # (2b) TANPA seleksi: pesan aksi (banding/urutkan) ADALAH goal baru —
+        #      user minta perbandingan/ranking tapi belum pilih kandidat -> OFFER.
+        #      (Di dalam seleksi, pesan yang sama = aksi lanjutan, bukan goal baru.)
+        if selection is None and self._is_action_without_selection(text):
+            offering = self._do_offer(text) or self._do_offer(self._concept_query(text))
+            if offering and offering.get("groups"):
+                candidates = self._prioritize_answerable(self._flatten_candidates(offering["groups"]))
+                ym = re.search(r"\b(19\d{2}|20\d{2})\b", text)
+                self._persist_offered(conversation_id, candidates, goal_year=ym.group(1) if ym else None)
+                rec = candidates[0]["display_ref"] if candidates else None
+                return RagOutcome(
+                    kind="offer",
+                    text=render_candidates_reply(candidates, recommended_ref=rec),
+                    candidate_refs=[c["display_ref"] for c in candidates],
+                )
+
         # (2) follow-up pada seleksi: pesan tanpa goal/aksi/tahun -> passthrough
         #     (jangan query ulang tanpa user bertanya).
         if selection is not None:
@@ -283,7 +307,11 @@ class RagPipeline:
 
         # (3) goal data baru -> OFFER.
         if self._looks_like_goal(text):
+            # offering pada teks APA ADANYA dan konsepnya; ambil yang menemukan
+            # kandidat. "coba carikan kematian" -> konsep "kematian" ketemu.
             offering = self._do_offer(text)
+            if not (offering and offering.get("groups")):
+                offering = self._do_offer(self._concept_query(text))
             # Catatan: FTS leksikal tidak bisa membedakan "pendudk" (typo legit)
             # dari "unicorn" (tak ada) lewat skor — keduanya rendah. Maka TIDAK
             # ada threshold skor di sini; kandidat ditawarkan dan user memutuskan.
@@ -291,10 +319,15 @@ class RagPipeline:
             # kandidat yang mungkin relevan.
             if offering and offering.get("groups"):
                 candidates = self._flatten_candidates(offering["groups"])
+                # Rekomendasi & urutan: untuk goal ANGKA, family yang bisa menjawab
+                # fakta (dynamic/simdasi) didahulukan dari publication/census yang
+                # hanya metadata. FTS menaruh "tahun 2020" cocok judul publikasi
+                # sensus 2020 di atas — itu menyesatkan user yang mau angka.
+                candidates = self._prioritize_answerable(candidates)
                 # simpan tahun yang user sebut di goal, supaya selection mewarisinya
                 ym = re.search(r"\b(19\d{2}|20\d{2})\b", text)
                 self._persist_offered(conversation_id, candidates, goal_year=ym.group(1) if ym else None)
-                rec = (offering.get("recommendation") or {}).get("ref")
+                rec = candidates[0]["display_ref"] if candidates else None
                 text_out = render_candidates_reply(candidates, recommended_ref=rec)
                 return RagOutcome(
                     kind="offer",
@@ -322,20 +355,22 @@ class RagPipeline:
         return out
 
     def _looks_like_goal(self, text: str) -> bool:
-        """Goal data. TIGA sinyal, bukan daftar topik hardcoded:
-          (a) penanda kata tanya/statistik ringan (GOAL_RE), ATAU
-          (b) ada tanda '?' DAN FTS menemukan kandidat, ATAU
-          (c) FTS menemukan kandidat KUAT (skor >= _GOAL_MIN_SCORE) meski tanpa
-              '?' — mis. "sekarang PDRB dong", "PDRB ADHB dong".
-        Topik hidup di bps_registry, bukan di regex. Sapaan/obrolan murni
-        ("halo","makasih") skornya lemah -> passthrough.
+        """Goal data — bukan daftar topik hardcoded.
+
+        Sinyal: (a) penanda kata tanya/statistik ringan, ATAU (b) tanda '?' +
+        FTS ketemu, ATAU (c) FTS kuat pada teks ATAU konsepnya (stopword dibuang
+        — 'coba carikan hotel' dan 'hotel' sama-sama ketemu).
+
+        PESAN AKSI (banding/urutkan/lanjut/sumber) BUKAN goal baru — dideteksi
+        di sini agar tak salah arah ke (1c).
         """
         if not text or not text.strip():
             return False
+        # aksi lanjutan bukan goal baru
+        if COMPARE_RE.search(text) or ANALYZE_RE.search(text) or SOURCE_RE.search(text) or PAGE_RE.match(text.strip()):
+            return False
         if GOAL_RE.search(text):
             return True
-        # FTS pada teks APA ADANYA dan pada konsep-nya (stopword dibuang) —
-        # "sekarang PDRB dong" dan "PDRB" harus sama-sama ketemu.
         for variant in (text, self._concept_query(text)):
             offering = self._do_offer(variant)
             groups = (offering or {}).get("groups", [])
@@ -348,7 +383,21 @@ class RagPipeline:
                 return True
         return False
 
-    _GOAL_MIN_SCORE = 4.0
+    _GOAL_MIN_SCORE = 2.0
+
+    @staticmethod
+    def _prioritize_answerable(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Untuk goal angka: dynamic/simdasi (bisa query fakta) duluan, lalu
+        census (inspect) dan publication (metadata). Bukan hardcode topik —
+        ini prioritas FAMILY berdasarkan kemampuan menjawab, berlaku umum."""
+        rank = {"dynamic": 0, "simdasi": 1, "census": 2, "publication": 3}
+        return sorted(candidates, key=lambda c: rank.get(c.get("family", ""), 9))
+
+    @staticmethod
+    def _is_action_without_selection(text: str) -> bool:
+        """Pesan aksi (banding/urutkan/ranking) tanpa seleksi aktif = goal baru.
+        Deteksi kata aksi saja — topik diserahkan ke FTS registry."""
+        return bool(COMPARE_RE.search(text) or ANALYZE_RE.search(text))
 
     @staticmethod
     def _extract_ref(text: str) -> str | None:
@@ -368,6 +417,13 @@ class RagPipeline:
             "dan", "atau", "dengan", "untuk", "dari", "pada", "di", "ke", "ini",
             "itu", "saja", "aja", "juga", "kok", "sih", "nih", "kan", "deh", "lah",
             "berapa", "berapaan", "berapa banyak", "berapaan sih",
+            # kata pembungkus permintaan — dibuang agar konsep bersih:
+            "coba", "carikan", "carikan", "tolong", "minta", "mintak", "cari",
+            "carikanlah", "mohon", "please", "cobain", "cariin", "tunjukkan",
+            "tampilkan", "kasih", "kasih tau", "beri", "berikan", "dong",
+            "data", "tahun", "berapa", "berapa banyak",
+            # kata ukuran/kuantitas — bukan konsep:
+            "total", "jumlah", "jumla", "banyak", "berapa", "nilai", "angka",
         }
         words = re.findall(r"[A-Za-z]{3,}", text)
         kept = [w for w in words if w.lower() not in stop]
@@ -543,8 +599,10 @@ class RagPipeline:
     def _compare_periods(
         self, conversation_id: str, text: str, selection: dict[str, Any]
     ) -> RagOutcome:
-        """query_and_compare. Dua tahun eksplisit -> head-to-head (selisih+%);
-        tanpa dua tahun -> trend multi-periode."""
+        """query_and_compare. HANYA family ber-nilai (dynamic/simdasi);
+        census/publication tidak punya value agregat -> unavailable, JANGAN crash."""
+        if selection.get("family") not in ("dynamic", "simdasi"):
+            return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.PERIOD_UNAVAILABLE))
         pair = TWO_YEARS_RE.search(text or "")
         if pair:
             return self._compare_two_years(conversation_id, pair.group(1), pair.group(2), selection)
@@ -591,7 +649,9 @@ class RagPipeline:
     def _analyze_ranking(
         self, conversation_id: str, text: str, selection: dict[str, Any]
     ) -> RagOutcome:
-        """analyze_existing_result: ranking per kecamatan (tertinggi/terendah)."""
+        """analyze_existing_result: ranking per kecamatan. Hanya family ber-nilai."""
+        if selection.get("family") not in ("dynamic", "simdasi"):
+            return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.GEOGRAPHY_UNAVAILABLE))
         rows = self.querier(
             selection.get("family"), text,
             {**selection, "_mode": "by_geography"},
