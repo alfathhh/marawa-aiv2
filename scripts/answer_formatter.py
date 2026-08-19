@@ -180,6 +180,48 @@ def format_trend(
     return "\n".join(lines)
 
 
+def format_comparison(
+    older: Evidence,
+    newer: Evidence,
+    indicator_label: str,
+) -> str:
+    """docs/18 §7. Head-to-head dua periode: nilai masing-masing + selisih + %.
+
+    Selisih & persen dihitung DI SINI (deterministik), bukan oleh LLM —
+    invariant #4. Kedua periode SELALU dicetak eksplisit; "terbaru" tidak
+    pernah berdiri sendiri. Unit harus cocok; kalau beda, abstain (angka
+    tanpa satuan seragam menyesatkan).
+    """
+    if older.value is None or newer.value is None:
+        return abstention_text(NoDataReason.NOT_IN_CATALOGUE, indicator_label=indicator_label)
+    if (older.unit or "") != (newer.unit or ""):
+        return abstention_text(NoDataReason.UNIT_UNDER_REVIEW, indicator_label=indicator_label)
+
+    delta = newer.value - older.value
+    if older.value != 0:
+        pct = (delta / abs(older.value)) * Decimal(100)
+        pct_str = f"{pct:+.1f}%".replace(".", ",")
+    else:
+        pct_str = "n/a (basis 0)"
+
+    arah = "naik" if delta > 0 else ("turun" if delta < 0 else "tetap")
+    unit = newer.unit or ""
+    delta_s = f"{delta:+,.0f}".replace(",", ".")
+
+    lines = [
+        f"*{indicator_label}* — perbandingan",
+        f"📍 {newer.geography or older.geography}",
+        "",
+        f"• {older.period}: {format_number(older.value)} {unit}".rstrip(),
+        f"• {newer.period}: {format_number(newer.value)} {unit}".rstrip(),
+        "",
+        f"Perubahan: {delta_s} {unit} ({pct_str}) — {arah}.",
+        "",
+        f"Sumber: {newer.source_label}",
+    ]
+    return "\n".join(lines)
+
+
 def system_counts_for(
     candidates: Iterable[Candidate] = (),
     rows: Iterable[Evidence] = (),

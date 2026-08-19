@@ -232,11 +232,11 @@ def _pipe_with_geo():
     from scripts.rag_store_pg import PgSelectionStore, _dsn, load_offering_index, make_offer, query_serving
     idx = load_offering_index(); sel = PgSelectionStore(_dsn())
     rag = RagPipeline(store=sel, llm=None, querier=query_serving, offer=make_offer(), offering_index=idx)
-    return rag, sel, _dsn
+    return rag, sel, _dsn()
 
 def test_compare_periods_trend() -> None:
     import psycopg
-    rag, sel, dsn_fn = _pipe_with_geo(); dsn = dsn_fn()
+    rag, sel, dsn = _pipe_with_geo()
     cid = "628100000001@s.whatsapp.net"
     with psycopg.connect(dsn) as c: c.execute("DELETE FROM public.rag_selection WHERE conversation_id=%s",(cid,)); c.commit()
     rag.handle(cid, "berapa jumlah penduduk?"); rag.handle(cid, "D1")
@@ -246,7 +246,7 @@ def test_compare_periods_trend() -> None:
 
 def test_analyze_ranking_kecamatan() -> None:
     import psycopg
-    rag, sel, dsn_fn = _pipe_with_geo(); dsn = dsn_fn()
+    rag, sel, dsn = _pipe_with_geo()
     cid = "628100000002@s.whatsapp.net"
     with psycopg.connect(dsn) as c: c.execute("DELETE FROM public.rag_selection WHERE conversation_id=%s",(cid,)); c.commit()
     rag.handle(cid, "berapa jumlah penduduk?"); rag.handle(cid, "D1")
@@ -257,7 +257,7 @@ def test_analyze_ranking_kecamatan() -> None:
 
 def test_paging_candidates() -> None:
     import psycopg
-    rag, sel, dsn_fn = _pipe_with_geo(); dsn = dsn_fn()
+    rag, sel, dsn = _pipe_with_geo()
     cid = "628100000003@s.whatsapp.net"
     with psycopg.connect(dsn) as c: c.execute("DELETE FROM public.rag_selection WHERE conversation_id=%s",(cid,)); c.commit()
     rag.handle(cid, "publikasi tentang penduduk")
@@ -266,9 +266,32 @@ def test_paging_candidates() -> None:
 
 def test_rerank_negation() -> None:
     import psycopg
-    rag, sel, dsn_fn = _pipe_with_geo(); dsn = dsn_fn()
+    rag, sel, dsn = _pipe_with_geo()
     cid = "628100000004@s.whatsapp.net"
     with psycopg.connect(dsn) as c: c.execute("DELETE FROM public.rag_selection WHERE conversation_id=%s",(cid,)); c.commit()
     rag.handle(cid, "data pendidikan")
     o = rag.handle(cid, "bukan pendidikan, jumlah SD")
     assert o.kind in ("offer", "clarify")
+
+
+def test_compare_two_years_head_to_head() -> None:
+    """Dua tahun eksplisit -> head-to-head dgn selisih + persen (server-side)."""
+    import psycopg
+    rag, sel, dsn = _pipe_with_geo()
+    cid = "628100000010@s.whatsapp.net"
+    with psycopg.connect(dsn) as c: c.execute("DELETE FROM public.rag_selection WHERE conversation_id=%s",(cid,)); c.commit()
+    rag.handle(cid, "berapa jumlah penduduk?"); rag.handle(cid, "D1")
+    o = rag.handle(cid, "bandingkan 2023 vs 2025")
+    assert o.kind == "answer"
+    assert "2023" in o.text and "2025" in o.text
+    assert "Perubahan" in o.text and "%" in o.text  # selisih + persen
+
+def test_format_comparison_deterministic() -> None:
+    from scripts.answer_formatter import format_comparison
+    from scripts.answer_gate import Evidence
+    from decimal import Decimal
+    old = Evidence("e1", Decimal("100"), "jiwa", "known", "2024", "X", "D")
+    new = Evidence("e2", Decimal("110"), "jiwa", "known", "2025", "X", "D")
+    out = format_comparison(old, new, "Jumlah Penduduk")
+    assert "10 jiwa" in out.replace(".", "") or "+10" in out.replace(".", "")
+    assert "10,0%" in out or "+10" in out  # persen hadir

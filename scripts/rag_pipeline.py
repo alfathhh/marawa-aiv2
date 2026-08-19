@@ -32,6 +32,7 @@ from typing import Any, Callable
 from scripts.answer_formatter import (
     Candidate,
     format_candidates,
+    format_comparison,
     format_single_value,
     format_trend,
 )
@@ -79,6 +80,10 @@ ANALYZE_RE = re.compile(
 )
 PAGE_RE = re.compile(r"^(lanjut|next|berikutnya|lanjut publikasi)$", re.IGNORECASE)
 RERANK_RE = re.compile(r"^bukan\s+\w+", re.IGNORECASE)  # "bukan pendidikan, jumlah SD"
+
+# Dua tahun eksplisit untuk perbandingan head-to-head ("2024 vs 2025",
+# "2023 dibanding 2025", "2022 dan 2024"). Diambil server-side, bukan LLM.
+TWO_YEARS_RE = re.compile(r"\b(19\d{2}|20\d{2})\b\D{0,12}\b(19\d{2}|20\d{2})\b")
 
 
 @dataclass(frozen=True)
@@ -377,7 +382,11 @@ class RagPipeline:
     def _compare_periods(
         self, conversation_id: str, text: str, selection: dict[str, Any]
     ) -> RagOutcome:
-        """query_and_compare: trend multi-periode (banding tahun)."""
+        """query_and_compare. Dua tahun eksplisit -> head-to-head (selisih+%);
+        tanpa dua tahun -> trend multi-periode."""
+        pair = TWO_YEARS_RE.search(text or "")
+        if pair:
+            return self._compare_two_years(conversation_id, pair.group(1), pair.group(2), selection)
         rows = self.querier(
             selection.get("family"), text,
             {**selection, "_mode": "trend"},
@@ -389,10 +398,28 @@ class RagPipeline:
             for r in rows
         ]
         answer = format_trend(evidence, indicator_label=rows[0].get("indicator_name", "indikator"))
+        return self._gate_or_abstain(conversation_id, answer, evidence, selection)
+
+    def _compare_two_years(
+        self, conversation_id: str, year_a: str, year_b: str, selection: dict[str, Any]
+    ) -> RagOutcome:
+        rows_a = self.querier(selection.get("family"), year_a, selection) or []
+        rows_b = self.querier(selection.get("family"), year_b, selection) or []
+        if not rows_a or not rows_b:
+            return RagOutcome(kind="unavailable", text=abstention_text(NoDataReason.PERIOD_UNAVAILABLE))
+        older, newer = (rows_a[0], rows_b[0]) if year_a <= year_b else (rows_b[0], rows_a[0])
+        ev_old = build_evidence_from_row(older, source_label=source_label_for(selection))
+        ev_new = build_evidence_from_row(newer, source_label=source_label_for(selection))
+        answer = format_comparison(ev_old, ev_new, indicator_label=newer.get("indicator_name", "indikator"))
+        return self._gate_or_abstain(conversation_id, answer, [ev_old, ev_new], selection)
+
+    def _gate_or_abstain(
+        self, conversation_id: str, answer: str, evidence: list, selection: dict[str, Any]
+    ) -> RagOutcome:
         context = GateContext(
             evidence=evidence, query_facts=True,
             selection_source="active_dataset",
-            system_counts=frozenset({len(rows)}),
+            system_counts=frozenset({len(evidence)}),
         )
         verdict = evaluate({"text": answer, "evidence_ids": [e.evidence_id for e in evidence]}, context)
         if verdict.blocked:
