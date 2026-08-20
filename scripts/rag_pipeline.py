@@ -339,6 +339,63 @@ class RagPipeline:
                 return self._answer_from_selection(conversation_id, text, selection)
             return RagOutcome(kind="passthrough", text="")
 
+        # (3b) ROUTING NIAT — klasifier membedakan sapaan/basa-basi/layanan/
+        #      konsultasi/rekomendasi/admin/akhiri. Sapaan & basa-basi dijawab
+        #      deterministik TANPA LLM (LLM membaca history data lama dan salah
+        #      jawab — bug 2026-08-20 "halo -> PDRB").
+        # Routing niat hanya saat TIDAK ada alur data aktif (tanpa seleksi DAN
+        # tanpa daftar ditawarkan) — supaya tidak mengganggu user yang sedang
+        # memilih kandidat. RECOMMEND dengan topik spesifik tetap jatuh ke goal.
+        if selection is None and not offered:
+            from scripts.intent import Intent, classify
+            intent = classify(text)
+            if intent is Intent.GREETING:
+                return RagOutcome(kind="answer", text=self._greeting_text())
+            if intent is Intent.THANKS:
+                return RagOutcome(
+                    kind="answer",
+                    text="Sama-sama! Silakan tanya lagi kalau butuh data statistik lain.",
+                )
+            if intent is Intent.SMALLTALK:
+                return RagOutcome(kind="answer", text=self._smalltalk_text())
+            # ACTION (lanjut/urutkan/bandingkan) BUKAN niat percakapan — biarkan
+            # jatuh ke alur data di bawah (paging/compare/analyze).
+            if intent is Intent.RECOMMEND:
+                # rekomendasi tanpa topik -> menu; dengan topik -> goal (lanjut ke bawah)
+                if self._is_generic_data_request(text):
+                    return RagOutcome(kind="clarify", text=self._topic_menu_text())
+                # ada topik -> biarkan jatuh ke goal-check (3)
+            if intent is Intent.END:
+                return RagOutcome(
+                    kind="answer",
+                    text="Baik, terima kasih sudah menghubungi. Ketik *halo* kalau butuh lagi nanti.",
+                )
+            if intent is Intent.HANDOVER:
+                return RagOutcome(
+                    kind="answer",
+                    text="Baik, saya teruskan ke petugas PST. Balas *ADMIN* untuk konfirmasi, atau lanjutkan pertanyaan data Anda di sini.",
+                )
+            if intent is Intent.CONSULT:
+                return RagOutcome(
+                    kind="answer",
+                    text="Siap membantu lebih dalam. Sebutkan topik yang mau dikonsultasikan, atau ketik *ADMIN* untuk bicara langsung dengan petugas.",
+                )
+            if intent is Intent.SERVICE:
+                return RagOutcome(
+                    kind="answer",
+                    text="Untuk layanan administrasi (surat, antrean, jam buka, alamat kantor), saya arahkan ke petugas. Ketik *ADMIN* ya. Untuk data statistik, tanyakan saja di sini.",
+                )
+            if intent is Intent.UNCLEAR:
+                return RagOutcome(
+                    kind="answer",
+                    text=(
+                        "Maaf, saya kurang paham. Ketik pertanyaan data Anda, misalnya "
+                        "*berapa jumlah penduduk?* — atau *ADMIN* untuk dibantu petugas."
+                    ),
+                )
+            # Intent.DATA sudah ditangani di (3) di atas; SMALLTALK/RECOMMEND jatuh ke sini.
+
+
         # (3) goal data baru -> OFFER.
         if self._looks_like_goal(text):
             # offering pada teks APA ADANYA dan konsepnya; ambil yang menemukan
@@ -380,34 +437,6 @@ class RagPipeline:
                 text=render_candidates_reply([], recommended_ref=None),
             )
 
-        # (3b) SAPAAN / TERIMA KASIH murni -> greeting deterministik, TANPA LLM.
-        #      LLM membaca history data lama (PDRB) dan menjawab itu untuk
-        #      "halo" — salah total. Sapaan dijawab tetap, tidak membawa konteks.
-        if selection is None and GREETING_RE.match(text.strip()):
-            return RagOutcome(
-                kind="answer",
-                text='Halo! Saya *MARAWA*, asisten layanan statistik BPS Kabupaten Padang Pariaman. Saya bisa membantu Anda dengan:\n\n📊 *Data statistik* — tanya angka resmi, misalnya:\n  • berapa jumlah penduduk?\n  • berapa PDRB 2024?\n  • produksi padi, kemiskinan, IPM, kesehatan, dll\n\n📈 *Perbandingan & tren* — misalnya:\n  • bandingkan penduduk 2023 vs 2025\n  • kecamatan mana yang paling padat?\n\n🗂 *Sensus & publikasi* — data sensus dan dokumen resmi BPS\n\n👨\u200d💼 *Konsultasi petugas* — ketik *ADMIN* untuk dibantu petugas PST\n\nSilakan ketik pertanyaan Anda.',
-            )
-        if selection is None and THANKS_RE.match(text.strip()):
-            return RagOutcome(
-                kind="answer",
-                text="Sama-sama! Silakan tanya lagi kalau butuh data statistik lain.",
-            )
-
-        # (3c) pesan terlalu pendek/tidak jelas ("p", "?", "asdf") dan BUKAN
-        #      sapaan/thanks -> jawab sopan meminta kejelasan, JANGAN lempar ke
-        #      LLM yang bisa mengarang jawaban dari history lama.
-        if selection is None:
-            words = [w for w in re.findall(r"[A-Za-z]{3,}", text.lower())]
-            if not words:
-                return RagOutcome(
-                    kind="answer",
-                    text=(
-                        "Maaf, saya kurang paham. Ketik pertanyaan data Anda, misalnya "
-                        "*berapa jumlah penduduk?* — atau *ADMIN* untuk dibantu petugas."
-                    ),
-                )
-
         # (4) bukan goal data -> biarkan AgentRuntime meneruskan ke LLM.
         return RagOutcome(kind="passthrough", text="")
 
@@ -438,6 +467,13 @@ class RagPipeline:
         }
         words = [w for w in re.findall(r"[A-Za-z]{4,}", (text or "").lower()) if w not in stop]
         return not words  # tidak ada kata kunci spesifik -> permintaan umum
+
+    def _greeting_text(self) -> str:
+        return 'Halo! Saya *MARAWA*, asisten layanan statistik BPS Kabupaten Padang Pariaman. Saya bisa membantu Anda dengan:\n\n📊 *Data statistik* — tanya angka resmi, misalnya:\n  • berapa jumlah penduduk?\n  • berapa PDRB 2024?\n  • produksi padi, kemiskinan, IPM, kesehatan, dll\n\n📈 *Perbandingan & tren* — misalnya:\n  • bandingkan penduduk 2023 vs 2025\n  • kecamatan mana yang paling padat?\n\n🗂 *Sensus & publikasi* — data sensus dan dokumen resmi BPS\n\n👨\u200d💼 *Konsultasi petugas* — ketik *ADMIN* untuk dibantu petugas PST\n\nSilakan ketik pertanyaan Anda.'
+
+    def _smalltalk_text(self) -> str:
+        """Basa-basi — ramah tapi mengarahkan kembali ke layanan, tanpa kaku."""
+        return 'Hehe, saya ini bot statistik jadi kurang bisa ngobrol santai. Tapi kalau soal data Kabupaten Padang Pariaman, saya jagonya. Mau coba? Misalnya: *berapa jumlah penduduk?* atau ketik *ADMIN* untuk ngobrol dengan petugas.'
 
     def _topic_menu_text(self) -> str:
         """Menu kategori data yang ramah — dibangun dari registry (topik nyata)."""
