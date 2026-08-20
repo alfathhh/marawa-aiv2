@@ -258,13 +258,17 @@ class AgentRuntime:
 
     def _last_inbound_text(self, cid: str) -> str | None:
         """Pesan user terakhir — input untuk deteksi goal RAG."""
+        return self._last_inbound(cid)[0]
+
+    def _last_inbound(self, cid: str) -> tuple[str | None, str | None]:
+        """(body, wa_message_id) pesan user terakhir — untuk RAG + idempotency."""
         msgs = self.store.messages(cid, limit=20) if callable(
             getattr(self.store, "messages", None)
         ) else self.store.messages.get(cid, [])[-20:]
         for m in msgs:  # store mengembalikan terbaru->terlama
             if m.get("direction") == "in":
-                return m.get("body")
-        return None
+                return m.get("body"), m.get("wa_message_id")
+        return None, None
 
     def process_pending(self, limit: int = 10) -> int:
         try:
@@ -300,6 +304,15 @@ class AgentRuntime:
             if result.error and result.error not in ("simulated_failure",):
                 log.warning("LLM gagal cid=%s error=%s latency_ms=%s", cid, result.error, result.latency_ms)
             body = result.text if result.text else FALLBACK_REPLY
+        # AKAR BUG (audit 2026-08-20): idempotency_key = agent_run:cid:state_version.
+        # Untuk percakapan yang SUDAH BOT_ACTIVE, inbound TIDAK menaikkan
+        # state_version (by design). Akibatnya idempotency_key SAMA untuk setiap
+        # reply -> ON CONFLICT DO NOTHING -> reply kedua dst HILANG. Inilah kenapa
+        # bot "diam" untuk pesan lanjutan.
+        # Fix: kunci = wa_message_id pesan yang dijawab — unik per pesan, dan
+        # idempotent untuk retry pesan yang sama (crash+retry tidak double-send).
+        _, last_wa_id = self._last_inbound(cid)
+        idem = f"agent_run:{cid}:{last_wa_id}" if last_wa_id else f"agent_run:{cid}:{conv.state_version}:{uuid.uuid4().hex[:12]}"
         record = SendRecord(
             outbox_id=str(uuid.uuid4()),
             conversation_id=cid,
@@ -308,7 +321,7 @@ class AgentRuntime:
             sender_admin_id=None,
             state_version_at_enqueue=conv.state_version,
             status=SendStatus.PENDING,
-            idempotency_key=f"agent_run:{cid}:{conv.state_version}",
+            idempotency_key=idem,
         )
         finisher = getattr(self.store, "complete_agent_run", None)
         if callable(finisher):

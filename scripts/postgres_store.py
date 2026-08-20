@@ -260,12 +260,13 @@ class PostgresStore:
     def messages(self, conversation_id: str, limit: int = 200) -> list[dict[str, Any]]:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "SELECT direction, sender_type, sender_admin_id, body, created_at "
+                "SELECT direction, sender_type, sender_admin_id, body, created_at, wa_message_id "
                 "FROM marawa_messages WHERE conversation_id = %s "
                 "ORDER BY created_at DESC LIMIT %s",
                 (conversation_id, limit),
             )
-            return list(reversed(cur.fetchall()))
+            # row_factory=dict_row -> baris sudah dict; cukup reversed + list.
+            return list(reversed([dict(row) for row in cur.fetchall()]))
 
     def has_message_id(self, wa_message_id: str) -> bool:
         with self._connect() as conn, conn.cursor() as cur:
