@@ -352,6 +352,28 @@ def csa_family_for_title(title: str) -> str | None:
         return None
 
 
+def list_topics(limit: int = 12) -> list[str]:
+    """Daftar kategori/topik nyata yang punya data aktif — untuk menu saat user
+    minta data tapi belum spesifik. Data-driven dari registry, bukan hardcode."""
+    try:
+        with psycopg.connect(_dsn(), row_factory=dict_row) as conn:
+            conn.execute("SET TRANSACTION READ ONLY")
+            rows = conn.execute(
+                """
+                SELECT topic_name, count(*) AS n
+                FROM bps_registry.dataset_registry
+                WHERE active AND topic_name IS NOT NULL AND topic_name <> ''
+                  AND topic_name NOT IN ('publication','census','dynamic','simdasi')
+                  AND length(topic_name) > 3
+                GROUP BY topic_name ORDER BY n DESC LIMIT %s
+                """,
+                (limit,),
+            ).fetchall()
+        return [r["topic_name"] for r in rows]
+    except Exception:
+        return []
+
+
 def fetch_indicator_meta(family: str, indicator_name: str) -> dict[str, Any]:
     """Metadata indikator dari dataset_registry (+ variable utk dynamic) untuk
     membangun deskripsi jujur. Read-only; kosong bila tak ketemu."""

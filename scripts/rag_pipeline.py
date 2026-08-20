@@ -76,7 +76,7 @@ QUESTION_MARK_RE = re.compile(r"[?？]")
 # (PDRB) lalu menjawab PDRB. Sapaan tidak boleh membawa konteks data lama.
 GREETING_RE = re.compile(
     r"^\s*(halo+w*|ha+llo+|hai+|hei+|hello|hi|pagi|siang|sore|malam|assalamu['’]?alaikum|"
-    r"selamat (pagi|siang|sore|malam)|permisi|tes|test|ping|hola|yo)(\b|\s|$|[!.]*)$",
+    r"selamat (pagi|siang|sore|malam)|permisi|hola|yo)(\b|\s|$|[!.]*)$",
     re.IGNORECASE,
 )
 THANKS_RE = re.compile(
@@ -185,6 +185,7 @@ class RagPipeline:
         offering_index: dict[str, Any] | None = None,
         meta: Callable[..., dict[str, Any]] | None = None,
         csa_labeler: Callable[..., str | None] | None = None,
+        topic_lister: Callable[..., list[str]] | None = None,
     ) -> None:
         self.store = store
         self.querier = querier
@@ -193,6 +194,8 @@ class RagPipeline:
         self._meta = meta
         # csa_labeler opsional: label topik CSA untuk kandidat (None = mati).
         self._csa_labeler = csa_labeler
+        # topic_lister opsional: daftar kategori nyata dari DB utk menu topik.
+        self._topic_lister = topic_lister
 
     def _describe(self, selection: dict[str, Any], sample_row: dict[str, Any]) -> str:
         """Deskripsi indikator dari metadata — diletakkan SEBELUM angka agar
@@ -362,6 +365,13 @@ class RagPipeline:
                     text=text_out,
                     candidate_refs=[c["display_ref"] for c in candidates],
                 )
+            # Bedakan dua kasus FTS kosong:
+            #  (a) query UMUM ("gw mau minta data", "data dong") -> user belum tahu
+            #      topik -> tawarkan MENU kategori yang ramah.
+            #  (b) query SPESIFIK tapi tak ada di registry ("unicorn") -> jujur
+            #      "tidak ada", jangan pura-pura menawarkan.
+            if self._is_generic_data_request(text):
+                return RagOutcome(kind="clarify", text=self._topic_menu_text())
             return RagOutcome(
                 kind="clarify",
                 text=render_candidates_reply([], recommended_ref=None),
@@ -395,6 +405,49 @@ class RagPipeline:
             for item in g.get("items", []):
                 out.append({**item, "family": fam})
         return out
+
+    @staticmethod
+    def _is_generic_data_request(text: str) -> bool:
+        """Query mau data TAPI tanpa topik spesifik — kata kunci panjang (>4 huruf)
+        yang bukan stopword/ukuran tidak ada. 'gw mau minta data' True; 'berapa
+        jumlah penduduk' False (ada 'penduduk'); 'unicorn' False (spesifik)."""
+        stop = {
+            "mau", "minta", "mintak", "data", "dong", "gw", "aku", "saya", "ingin",
+            "butuh", "perlu", "tolong", "coba", "cari", "carikan", "berapa", "brapa",
+            "jumlah", "total", "banyaknya", "nilai", "angka", "yang", "ada", "bisa",
+            "boleh", "kasih", "lihat", "tampilkan", "tunjukkan", "informasi", "info",
+        }
+        words = [w for w in re.findall(r"[A-Za-z]{4,}", (text or "").lower()) if w not in stop]
+        return not words  # tidak ada kata kunci spesifik -> permintaan umum
+
+    def _topic_menu_text(self) -> str:
+        """Menu kategori data yang ramah — dibangun dari registry (topik nyata)."""
+        topics = []
+        try:
+            if self._meta is not None:
+                pass  # meta per-indikator, bukan daftar topik
+        except Exception:
+            pass
+        # daftar kategori dari DB (topik nyata yang punya data) — bukan hardcode
+        if self._topic_lister is not None:
+            try:
+                topics = list(self._topic_lister() or [])
+            except Exception:
+                topics = []
+        if not topics:
+            topics = [
+                "Kependudukan", "PDRB / Ekonomi", "Pertanian", "Kemiskinan",
+                "Pendidikan", "Kesehatan", "IPM", "Perumahan", "Perdagangan",
+            ]
+        shown = topics[:10]
+        listing = "\n".join(f"  • {t}" for t in shown)
+        return (
+            "Siap! Saya punya banyak data statistik Kabupaten Padang Pariaman.\n\n"
+            "Biar pas, sebutkan topiknya ya. Misalnya kategori yang tersedia:\n"
+            f"{listing}\n\n"
+            "Contoh ketik: *berapa jumlah penduduk?*, *PDRB 2024*, atau *produksi padi*.\n"
+            "Kalau bingung, ketik *ADMIN* untuk dibantu petugas."
+        )
 
     def _looks_like_goal(self, text: str) -> bool:
         """Goal data — bukan daftar topik hardcoded.

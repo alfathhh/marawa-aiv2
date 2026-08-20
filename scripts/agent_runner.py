@@ -32,6 +32,7 @@ def _build_rag():
             _dsn,
             csa_label_for_title,
             fetch_indicator_meta,
+            list_topics,
             load_offering_index,
             make_offer,
             query_serving,
@@ -46,6 +47,7 @@ def _build_rag():
             offering_index=index,
             meta=fetch_indicator_meta,
             csa_labeler=csa_label_for_title,
+            topic_lister=list_topics,
         )
         log.info("rag pipeline aktif: %d family index", len(index.get("by_family", {})))
         return rag
