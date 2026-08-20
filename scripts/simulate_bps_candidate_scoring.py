@@ -295,6 +295,38 @@ def _score(concept_tokens: list[str], doc: dict[str, Any], year: str | None = No
         score += 1.2
     title_set = set(doc["title_tokens"])
     query_set = set(tokens)
+
+    # --- AKAR MASALAH RELEVANSI (audit 2026-08-20) -------------------------
+    # Token SPESIFIK (>=5 huruf, bukan stopword, bukan MODIFIER temporal/
+    # kualitas) adalah pembawa topik. Kandidat yang tidak mengandung SATU PUN
+    # token spesifik user ("kesehatan", "infrastruktur") TIDAK BOLEH
+    # mengalahkan kandidat yang mengandungnya, sekalipun kata umum ("jumlah")
+    # cocok. Modifier seperti "terbaru"/"semua" BUKAN topik — jangan jadi
+    # penalti (judul data jarang memuatnya).
+    _MODIFIER = {
+        "terbaru", "semua", "setiap", "masing", "terkini", "terakhir",
+        "tertinggi", "terendah", "terbesar", "terkecil", "paling",
+    }
+    # Singkatan resmi (PDRB, IPM, TPAK, ...) pendek tapi pembawa topik kuat —
+    # deteksi dari QUERY_ALIASES agar tidak di-hardcode per-kasus.
+    _acronyms = {k for k, v in QUERY_ALIASES.items() if k == (v[0] if len(v) == 1 else None) or len(k) <= 5}
+    specific = {
+        t for t in query_set
+        if (len(t) >= 4 or t in _acronyms)
+        and t not in STOP_WORDS and t not in _MODIFIER
+    }
+    if specific:
+        # token spesifik bisa cocok di judul ATAU konteks (mis. 'pdrb' ada di
+        # context_tokens untuk judul "Produk Domestik Regional Bruto").
+        context_set = set(doc["context_tokens"])
+        matched_specific = len(specific & (title_set | context_set))
+        if matched_specific == 0:
+            # tidak ada token spesifik user di judul/konteks -> penalti keras
+            score -= 3.0 * len(specific)
+        else:
+            # bonus per token spesifik yang cocok (relevansi topik nyata)
+            score += 1.6 * matched_specific
+
     if year and year in title_set:
         score += 3.0
     if "jumlah" in query_set and "jumlah" in title_set:
