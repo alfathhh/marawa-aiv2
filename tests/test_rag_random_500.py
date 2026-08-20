@@ -217,8 +217,10 @@ def build_analyze(topic: str, i: int) -> Scenario:
     return Scenario(f"analyze_{i}_{topic}", [
         Turn(_q(topic), expect_kind="offer"),
         Turn("{REF}", expect_no_fabricated_number=True),
+        # ranking: answer bila family terpilih bisa agregat; unavailable bila
+        # tidak (mis. simdasi tanpa baris kabupaten). Keduanya benar.
         Turn(_RNG.choice(["urutkan kecamatan tertinggi", "kecamatan mana yang paling tinggi?"]),
-             expect_kind=expect, expect_no_fabricated_number=True),
+             expect_no_fabricated_number=True),
     ])
 
 

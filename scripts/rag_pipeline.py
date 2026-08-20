@@ -303,7 +303,7 @@ class RagPipeline:
         if selection is None and self._is_action_without_selection(text):
             offering = self._do_offer(text) or self._do_offer(self._concept_query(text))
             if offering and offering.get("groups"):
-                candidates = self._prioritize_answerable(self._flatten_candidates(offering["groups"]))
+                candidates = self._prioritize_answerable(self._flatten_candidates(offering["groups"]), query_text=text)
                 ym = re.search(r"\b(19\d{2}|20\d{2})\b", text)
                 self._persist_offered(conversation_id, candidates, goal_year=ym.group(1) if ym else None)
                 rec = candidates[0]["display_ref"] if candidates else None
@@ -338,7 +338,7 @@ class RagPipeline:
                 # fakta (dynamic/simdasi) didahulukan dari publication/census yang
                 # hanya metadata. FTS menaruh "tahun 2020" cocok judul publikasi
                 # sensus 2020 di atas — itu menyesatkan user yang mau angka.
-                candidates = self._prioritize_answerable(candidates)
+                candidates = self._prioritize_answerable(candidates, query_text=text)
                 # simpan tahun yang user sebut di goal, supaya selection mewarisinya
                 ym = re.search(r"\b(19\d{2}|20\d{2})\b", text)
                 self._persist_offered(conversation_id, candidates, goal_year=ym.group(1) if ym else None)
@@ -401,12 +401,47 @@ class RagPipeline:
     _GOAL_MIN_SCORE = 2.0
 
     @staticmethod
-    def _prioritize_answerable(candidates: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        """Untuk goal angka: dynamic/simdasi (bisa query fakta) duluan, lalu
-        census (inspect) dan publication (metadata). Bukan hardcode topik —
-        ini prioritas FAMILY berdasarkan kemampuan menjawab, berlaku umum."""
+    def _prioritize_answerable(
+        candidates: list[dict[str, Any]], query_text: str = ""
+    ) -> list[dict[str, Any]]:
+        """Urutkan kandidat: FAMILY yang bisa jawab agregat dulu, lalu relevansi
+        topik sebagai pengikat di dalam tier yang sama.
+
+        Akar bug #1: dynamic membabi buta menaruh "Jumlah Penduduk" di atas utk
+        "infrastruktur kesehatan". Akar bug #2: relevansi membabi buta menaruh
+        simdasi (tak bisa agregat kabupaten) di atas dynamic utk "penduduk
+        kecamatan X". Solusi: dua kunci — (family_answerable, -relevance).
+        Family answerable = dynamic/simdasi (bisa query fakta); census/publication
+        belakangan. Di dalam tier yang sama, yang paling relevan topiknya menang.
+        """
         rank = {"dynamic": 0, "simdasi": 1, "census": 2, "publication": 3}
-        return sorted(candidates, key=lambda c: rank.get(c.get("family", ""), 9))
+        stop = {
+            "berapa", "jumlah", "total", "berapa banyak", "berapaan", "data",
+            "tahun", "di", "ke", "dari", "yang", "dan", "atau", "padang",
+            "pariaman", "kabupaten", "dong", "sih", "nih", "kan", "ya", "deh",
+        }
+        keywords = [
+            w for w in re.findall(r"[a-zA-Z]{4,}", (query_text or "").lower())
+            if w not in stop
+        ]
+
+        def relevance(c: dict[str, Any]) -> int:
+            title = (c.get("title") or "").lower()
+            return sum(1 for k in keywords if k in title)
+
+        # family-tier dulu (dynamic/simdasi bisa jawab), lalu relevansi di dalamnya.
+        # TAPI: kandidat answerable yang RELEVAN topiknya (mengandung kata kunci
+        # spesifik user) harus mengalahkan kandidat answerable yang tidak relevan.
+        # Jadi: kelompokkan answerable (dyn/simd) vs lainnya; dalam kelompok
+        # answerable, urutkan berdasarkan relevansi; sisanya di bawah.
+        def tier(c):
+            return rank.get(c.get("family", ""), 9)
+
+        answerable = [c for c in candidates if tier(c) <= 1]
+        others = [c for c in candidates if tier(c) > 1]
+        answerable.sort(key=lambda c: -relevance(c))
+        others.sort(key=lambda c: (tier(c), -relevance(c)))
+        return answerable + others
 
     @staticmethod
     def _is_action_without_selection(text: str) -> bool:
