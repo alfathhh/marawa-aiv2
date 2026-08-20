@@ -66,7 +66,10 @@ def source_label_for(selection: dict[str, Any]) -> str:
 GOAL_RE = re.compile(
     r"(berapa|brapa|berapaan|berapa banyak|jumlah|jumla|total|nilai|persen|"
     r"tingkat|data\b|statistik|bandingkan|dibanding|urutkan|peringkat|"
-    r"tertinggi|terendah|paling|mana yang|padat|kepadatan|pertumbuhan)",
+    r"tertinggi|terendah|paling|mana yang|padat|kepadatan|pertumbuhan|"
+    # niat menanyakan data (bentuk informal)
+    r"mau (nanya|tanya|minta)|mau minta|pengen (nanya|tanya)|ingin (tanya|nanya)|"
+    r"nanya|tanya dong|minta data|butuh data)",
     re.IGNORECASE,
 )
 QUESTION_MARK_RE = re.compile(r"[?？]")
@@ -391,6 +394,20 @@ class RagPipeline:
                 text="Sama-sama! Silakan tanya lagi kalau butuh data statistik lain.",
             )
 
+        # (3c) pesan terlalu pendek/tidak jelas ("p", "?", "asdf") dan BUKAN
+        #      sapaan/thanks -> jawab sopan meminta kejelasan, JANGAN lempar ke
+        #      LLM yang bisa mengarang jawaban dari history lama.
+        if selection is None:
+            words = [w for w in re.findall(r"[A-Za-z]{3,}", text.lower())]
+            if not words:
+                return RagOutcome(
+                    kind="answer",
+                    text=(
+                        "Maaf, saya kurang paham. Ketik pertanyaan data Anda, misalnya "
+                        "*berapa jumlah penduduk?* — atau *ADMIN* untuk dibantu petugas."
+                    ),
+                )
+
         # (4) bukan goal data -> biarkan AgentRuntime meneruskan ke LLM.
         return RagOutcome(kind="passthrough", text="")
 
@@ -416,6 +433,8 @@ class RagPipeline:
             "butuh", "perlu", "tolong", "coba", "cari", "carikan", "berapa", "brapa",
             "jumlah", "total", "banyaknya", "nilai", "angka", "yang", "ada", "bisa",
             "boleh", "kasih", "lihat", "tampilkan", "tunjukkan", "informasi", "info",
+            # bentuk informal "tanya": nanya, nanya2, ttg (tentang), soal, perihal
+            "nanya", "nanya2", "tanya", "ttg", "tentang", "soal", "perihal", "mengenai",
         }
         words = [w for w in re.findall(r"[A-Za-z]{4,}", (text or "").lower()) if w not in stop]
         return not words  # tidak ada kata kunci spesifik -> permintaan umum
@@ -463,6 +482,12 @@ class RagPipeline:
             return False
         # aksi lanjutan bukan goal baru
         if COMPARE_RE.search(text) or ANALYZE_RE.search(text) or SOURCE_RE.search(text) or PAGE_RE.match(text.strip()):
+            return False
+        # AKAR BUG: pesan terlalu pendek ("p", "a", "?") — FTS mencocokkan huruf
+        # tunggal ke banyak judul -> false goal. Goal butuh minimal satu kata
+        # bermakna >= 3 huruf. ("p" bukan pertanyaan.)
+        meaningful = [w for w in re.findall(r"[A-Za-z]{3,}", text.lower())]
+        if not meaningful:
             return False
         if GOAL_RE.search(text):
             return True
