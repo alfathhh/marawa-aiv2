@@ -261,12 +261,34 @@ class AgentRuntime:
         return self._last_inbound(cid)[0]
 
     def _last_inbound(self, cid: str) -> tuple[str | None, str | None]:
-        """(body, wa_message_id) pesan user terakhir — untuk RAG + idempotency."""
+        """(body, wa_message_id) pesan user TERAKHIR YANG BELUM DIJAWAB.
+
+        AKAR BUG (audit 2026-08-20): PostgresStore.messages() mengembalikan
+        terlama->terbaru (list(reversed)). Loop lama membaca dari depan sehingga
+        mengambil pesan TERLAMA ("ping"), bukan yang terbaru ("berapa jumlah
+        penduduk 2025?") — RAG pun passthrough karena pesan yang diproses bukan
+        goal. Fix: baca dari BELAKANG (terbaru), dan berhenti di pesan `in`
+        pertama yang belum punya balasan `out` setelahnya.
+        """
         msgs = self.store.messages(cid, limit=20) if callable(
             getattr(self.store, "messages", None)
         ) else self.store.messages.get(cid, [])[-20:]
-        for m in msgs:  # store mengembalikan terbaru->terlama
-            if m.get("direction") == "in":
+        # normalisasi ke urutan terbaru->terlama
+        seq = list(msgs)
+        if seq and seq[0].get("created_at") and seq[-1].get("created_at"):
+            if str(seq[0]["created_at"]) < str(seq[-1]["created_at"]):
+                seq = list(reversed(seq))  # pastikan terbaru dulu
+        else:
+            seq = list(reversed(seq))
+        seen_out = False
+        for m in seq:
+            d = m.get("direction")
+            if d == "out":
+                seen_out = True  # ada balasan setelah ini -> pesan in sebelumnya sudah dijawab
+                continue
+            if d == "in":
+                if seen_out:
+                    continue  # pesan in ini sudah dijawab (ada out setelahnya)
                 return m.get("body"), m.get("wa_message_id")
         return None, None
 
