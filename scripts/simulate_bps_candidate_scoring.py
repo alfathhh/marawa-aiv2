@@ -307,13 +307,19 @@ def _score(concept_tokens: list[str], doc: dict[str, Any], year: str | None = No
         "terbaru", "semua", "setiap", "masing", "terkini", "terakhir",
         "tertinggi", "terendah", "terbesar", "terkecil", "paling",
     }
+    # Kata UKURAN/kuantitas — bukan topik. "jumlah" di "jumlah jemaah haji" dan
+    # di "Jumlah Penduduk" sama-sama kata ukuran; kecocokannya BUKAN relevansi.
+    _QUANTIFIER = {
+        "jumlah", "banyaknya", "total", "angka", "nilai", "besaran", "persen",
+        "persentase", "tingkat", "laju", "rasio", "rata",
+    }
     # Singkatan resmi (PDRB, IPM, TPAK, ...) pendek tapi pembawa topik kuat —
     # deteksi dari QUERY_ALIASES agar tidak di-hardcode per-kasus.
     _acronyms = {k for k, v in QUERY_ALIASES.items() if k == (v[0] if len(v) == 1 else None) or len(k) <= 5}
     specific = {
         t for t in query_set
         if (len(t) >= 4 or t in _acronyms)
-        and t not in STOP_WORDS and t not in _MODIFIER
+        and t not in STOP_WORDS and t not in _MODIFIER and t not in _QUANTIFIER
     }
     if specific:
         # token spesifik bisa cocok di judul ATAU konteks (mis. 'pdrb' ada di
@@ -331,6 +337,12 @@ def _score(concept_tokens: list[str], doc: dict[str, Any], year: str | None = No
         score += 3.0
     if "jumlah" in query_set and "jumlah" in title_set:
         score += 1.2
+    # Untuk query "berapa jumlah/total/banyaknya", kandidat AGREGAT (judul
+    # mengandung "keseluruhan"/"total"/"seluruh") lebih cocok daripada yang
+    # terinci per kategori — user mau total, bukan rincian.
+    _AGG = {"keseluruhan", "total", "seluruh", "semua"}
+    if (query_set & _QUANTIFIER) and (title_set & _AGG):
+        score += 1.5
     if ("persentase" in query_set or "persen" in query_set) and ("persentase" in title_set or "persen" in title_set):
         score += 1.2
     if "kecamatan" in query_set and "kecamatan" in title_set:
