@@ -717,6 +717,7 @@ async function loadSettings() {
   } catch (error) { view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Setelan</h1></div><div class="error-box">' + esc(error.message) + '</div></div>'; }
 }
 
+let _waQrTimer = null;
 async function loadWhatsApp() {
   const title = $('wa_status_title'); if (!title) return;
   const detail = $('wa_status_detail'); const dot = $('wa_dot'); const qrBox = $('qr_box'); const image = $('wa_qr');
@@ -726,7 +727,24 @@ async function loadWhatsApp() {
     title.textContent = status.connected ? 'WhatsApp terhubung' : 'Belum terhubung';
     detail.textContent = status.connected ? 'Akun layanan siap menerima pesan.' : status.qr ? 'Pindai QR di bawah dengan WhatsApp akun bot.' : 'QR belum tersedia. Coba muat ulang.';
     qrBox.classList.toggle('hidden', status.connected || !status.qr);
-    if (!status.connected && status.qr) { const blob = await apiBlob('/settings/whatsapp-qr.png'); image.src = URL.createObjectURL(blob); }
+    if (!status.connected && status.qr) {
+      try {
+        const blob = await apiBlob('/settings/whatsapp-qr.png');
+        if (image._objUrl) URL.revokeObjectURL(image._objUrl);
+        image._objUrl = URL.createObjectURL(blob);
+        image.src = image._objUrl;
+        image.style.display = 'block';
+      } catch (imgErr) {
+        // QR sedang rotate / habis -> placeholder + auto retry, bukan broken image
+        image.style.display = 'none';
+        detail.textContent = 'QR sedang diperbarui… memuat ulang otomatis.';
+      }
+    }
+    // Auto-refresh QR tiap 30 dtk selama belum terhubung (QR rotate ~60 dtk).
+    if (_waQrTimer) clearTimeout(_waQrTimer);
+    if (!status.connected) {
+      _waQrTimer = setTimeout(loadWhatsApp, 30000);
+    }
   } catch (error) { dot.className = 'connection-dot bad'; title.textContent = 'Status tidak tersedia'; detail.textContent = error.message; }
 }
 
