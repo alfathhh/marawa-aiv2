@@ -373,12 +373,7 @@ class RagPipeline:
         if selection is None and GREETING_RE.match(text.strip()):
             return RagOutcome(
                 kind="answer",
-                text=(
-                    "Halo! Saya MARAWA, asisten layanan statistik BPS Kabupaten "
-                    "Padang Pariaman. Silakan tanyakan data yang Anda butuhkan, "
-                    "misalnya: *berapa jumlah penduduk?*, *berapa PDRB 2024?*, "
-                    "atau *berapa produksi padi?*."
-                ),
+                text='Halo! Saya *MARAWA*, asisten layanan statistik BPS Kabupaten Padang Pariaman. Saya bisa membantu Anda dengan:\n\n📊 *Data statistik* — tanya angka resmi, misalnya:\n  • berapa jumlah penduduk?\n  • berapa PDRB 2024?\n  • produksi padi, kemiskinan, IPM, kesehatan, dll\n\n📈 *Perbandingan & tren* — misalnya:\n  • bandingkan penduduk 2023 vs 2025\n  • kecamatan mana yang paling padat?\n\n🗂 *Sensus & publikasi* — data sensus dan dokumen resmi BPS\n\n👨\u200d💼 *Konsultasi petugas* — ketik *ADMIN* untuk dibantu petugas PST\n\nSilakan ketik pertanyaan Anda.',
             )
         if selection is None and THANKS_RE.match(text.strip()):
             return RagOutcome(
