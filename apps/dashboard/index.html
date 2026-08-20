@@ -408,6 +408,7 @@ button, [role="button"] { -webkit-tap-highlight-color: transparent; }
       <button class="nav-item is-active" data-tab="inbox" aria-current="page"><svg class="icon"><use href="#i-inbox"/></svg><span>Kotak masuk</span><b class="nav-count hidden" id="waiting_count">0</b></button>
       <button class="nav-item hidden" data-tab="settings" id="nav_settings"><svg class="icon"><use href="#i-settings"/></svg><span>Setelan</span></button>
       <button class="nav-item hidden" data-tab="audit" id="nav_audit"><svg class="icon"><use href="#i-audit"/></svg><span>Riwayat</span></button>
+      <button class="nav-item hidden" data-tab="syslog" id="nav_syslog"><svg class="icon"><use href="#i-audit"/></svg><span>Log Sistem</span></button>
     </nav>
     <div class="rail-spacer"></div>
     <div class="rail-status">
@@ -458,6 +459,7 @@ button, [role="button"] { -webkit-tap-highlight-color: transparent; }
 
   <section class="workspace page-workspace hidden" id="settings_view"></section>
   <section class="workspace page-workspace hidden" id="audit_view"></section>
+  <section class="workspace page-workspace hidden" id="syslog_view"></section>
 </div>
 
 <div class="toast" id="toast" role="status" aria-live="polite"></div>
@@ -686,8 +688,10 @@ function showTab(name) {
   $('inbox_view').classList.toggle('hidden', name !== 'inbox');
   $('settings_view').classList.toggle('hidden', name !== 'settings');
   $('audit_view').classList.toggle('hidden', name !== 'audit');
+  $('syslog_view').classList.toggle('hidden', name !== 'syslog');
   if (name === 'settings') loadSettings();
   if (name === 'audit') loadAudit();
+  if (name === 'syslog') loadSyslog();
 }
 
 const SETTING_META = {
@@ -814,12 +818,30 @@ async function loadAudit() {
   } catch (error) { view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Riwayat</h1></div><div class="error-box">' + esc(error.message) + '</div></div>'; }
 }
 
+let _syslogService = 'marawa-agent';
+async function loadSyslog() {
+  const view = $('syslog_view');
+  view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Log Sistem</h1><p>Memuat log…</p></div></div>';
+  try {
+    const data = await api('GET', '/settings/system-log?service=' + encodeURIComponent(_syslogService) + '&lines=300&since_minutes=120');
+    const svcButtons = (data.services || []).map((s) =>
+      '<button class="btn compact' + (s === _syslogService ? ' primary' : '') + '" data-syslog-svc="' + esc(s) + '">' + esc(s.replace('marawa-','')) + '</button>'
+    ).join(' ');
+    const logText = esc(data.log || '(kosong)');
+    view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Log Sistem</h1><p>Journal systemd tiga service MARAWA (read-only, 2 jam terakhir).</p></div>' +
+      '<div class="settings-section"><div class="section-body">' +
+      '<div class="status-row" style="margin-bottom:12px">' + svcButtons + ' <button class="btn compact" id="syslog_refresh">' + icon('refresh') + 'Muat ulang</button></div>' +
+      '<pre class="mono" style="white-space:pre-wrap;background:#0d1117;color:#c9d1d9;padding:14px;border-radius:8px;max-height:60vh;overflow:auto;font-size:11px;line-height:1.5">' + logText + '</pre>' +
+      '</div></div></div>';
+  } catch (error) { view.innerHTML = '<div class="page-container"><div class="page-heading"><h1>Log Sistem</h1></div><div class="error-box">' + esc(error.message) + '</div></div>'; }
+}
+
 async function boot() {
   try { ME = await api('GET','/admin/session'); }
   catch (error) { showLogin(); return; }
   $('login_screen').classList.add('hidden'); $('app_shell').classList.remove('hidden');
   $('user_name').textContent = ME.admin_id; $('user_role').textContent = ME.role; $('user_avatar').textContent = initials(ME.admin_id);
-  const superadmin = ME.role === 'superadmin'; $('nav_settings').classList.toggle('hidden', !superadmin); $('nav_audit').classList.toggle('hidden', !superadmin);
+  const superadmin = ME.role === 'superadmin'; $('nav_settings').classList.toggle('hidden', !superadmin); $('nav_audit').classList.toggle('hidden', !superadmin); $('nav_syslog').classList.toggle('hidden', !superadmin);
   showTab('inbox'); await refresh();
   clearInterval(POLL_TIMER); clearInterval(TICK_TIMER);
   POLL_TIMER = setInterval(refresh, 5000); TICK_TIMER = setInterval(tickTimers, 1000);
@@ -838,6 +860,8 @@ document.addEventListener('click', (event) => {
   if (event.target.closest('#logout_btn')) { logout(); return; }
   if (event.target.closest('#search_clear')) { $('queue_search').value=''; SEARCH_QUERY=''; $('search_clear').classList.add('hidden'); renderQueue(); return; }
   if (event.target.closest('#wa_refresh')) { loadWhatsApp(); return; }
+  const syslogSvc = event.target.closest('[data-syslog-svc]'); if (syslogSvc) { _syslogService = syslogSvc.dataset.syslogSvc; loadSyslog(); return; }
+  if (event.target.closest('#syslog_refresh')) { loadSyslog(); return; }
   if (event.target.closest('#save_settings')) { saveSettings(); return; }
   if (event.target.closest('#add_contact')) { addContact(); return; }
   const del = event.target.closest('[data-delete-contact]'); if (del) { removeContact(del.dataset.deleteContact); return; }

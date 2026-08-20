@@ -664,7 +664,18 @@ async def webhook_whatsapp(
         store, await request.body(), x_marawa_signature or x_webhook_signature
     )
 
+    # AUDIT webhook: setiap pesan masuk tercatat — tanpa ini, pesan yang "masuk
+    # DB tapi bot diam" tidak bisa dilacak (kasus 2026-08-20: pesan tersimpan
+    # tapi agent_run_active tidak pernah true). Pakai logger root agar muncul
+    # di journal uvicorn.
+    import logging
+    _wlog = logging.getLogger("uvicorn.error")  # sudah ter-config ke journal
     message_ts = _as_aware(message.timestamp)
+    _wlog.info(
+        "webhook masuk: conv=%s wa_id=%s from_me=%s body=%.40s",
+        message.conversation_id, message.wa_message_id, message.from_me,
+        message.body or "",
+    )
     cutoff = _as_aware(store.pairing_cutoff_ts) if store.pairing_cutoff_ts else None
     if should_ignore_inbound(message_ts, cutoff):
         return {"status": "ignored_pre_pairing_history"}
@@ -730,6 +741,11 @@ async def webhook_whatsapp(
             return {"status": "ignored_duplicate"}
         if persisted == "conflict":
             continue
+        _wlog.info(
+            "webhook dispatch: conv=%s run_agent=%s reason=%s new_state=%s agent_run_active=%s",
+            message.conversation_id, run, reason,
+            transition.state.state.value, transition.state.agent_run_active,
+        )
         _dispatch_and_record(store, transition, message_ts)
         return {
             "status": "stored", "run_agent": run,
@@ -1221,6 +1237,51 @@ def get_audit_log(
     store: Store = Depends(get_store),
 ) -> list[dict[str, Any]]:
     return store.audit_log
+
+
+# ------------------------------- System log (journal) ----------------------
+
+_SYSTEM_SERVICES = ("marawa-api", "marawa-worker", "marawa-agent")
+
+
+@app.get("/settings/system-log")
+def get_system_log(
+    _admin: AdminIdentity = Depends(require_superadmin),
+    service: str = "marawa-agent",
+    lines: int = 200,
+    since_minutes: int = 60,
+) -> dict[str, Any]:
+    """Full log sistem (systemd journal) untuk tiga service MARAWA.
+
+    Superadmin-only. Membaca journalctl read-only; bukan shell bebas.
+    `service` dibatasi ke tiga unit yang dikenal (bukan input bebas) agar
+    tidak bisa dipakai membaca unit lain.
+    """
+    import subprocess
+
+    if service not in _SYSTEM_SERVICES:
+        raise HTTPException(400, f"service harus salah satu dari {_SYSTEM_SERVICES}")
+    lines = max(20, min(lines, 1000))
+    since_minutes = max(1, min(since_minutes, 1440))
+    try:
+        out = subprocess.run(
+            [
+                "journalctl", "-u", service, "--no-pager",
+                "-n", str(lines), "--since", f"-{since_minutes}min",
+                "--output", "short-precise",
+            ],
+            capture_output=True, text=True, timeout=20, check=False,
+        )
+        log_text = out.stdout if out.returncode == 0 else f"(journal error: {out.stderr.strip()})"
+    except Exception as exc:  # journalctl tidak ada / izin -> pesan jelas
+        raise HTTPException(503, f"tidak bisa membaca journal: {type(exc).__name__}") from None
+    return {
+        "service": service,
+        "lines": lines,
+        "since_minutes": since_minutes,
+        "log": log_text,
+        "services": list(_SYSTEM_SERVICES),
+    }
 
 
 # ------------------------------- Sweep (docs/06 §0.9/0.10) -------------------

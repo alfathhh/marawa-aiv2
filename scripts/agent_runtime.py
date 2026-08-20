@@ -312,7 +312,18 @@ class AgentRuntime:
         )
         finisher = getattr(self.store, "complete_agent_run", None)
         if callable(finisher):
-            return bool(finisher(cid, conv.state_version, record))
+            done = bool(finisher(cid, conv.state_version, record))
+            # AUDIT: tanpa log ini, agent yang "memproses" tapi gagal enqueue
+            # (CAS state_version mismatch) diam-diam loop selamanya — pesan masuk
+            # tapi tidak pernah terkirim (kasus 2026-08-20).
+            if not done:
+                log.warning(
+                    "complete_agent_run GAGAL cid=%s ver=%s (CAS mismatch?) — akan retry",
+                    cid, conv.state_version,
+                )
+            else:
+                log.info("reply enqueued cid=%s len=%d rag=%s", cid, len(body), rag_text is not None)
+            return done
         # In-memory fallback: enqueue + clear flag
         if not self.store.enqueue_outbox(record):
             return False
