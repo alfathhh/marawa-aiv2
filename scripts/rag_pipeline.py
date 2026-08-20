@@ -71,6 +71,19 @@ GOAL_RE = re.compile(
 )
 QUESTION_MARK_RE = re.compile(r"[?？]")
 
+# Sapaan murni — tanpa kata tanya data. Dibalas deterministik, BUKAN lewat LLM.
+# AKAR BUG (2026-08-20): "halo" jatuh ke LLM yang membaca history penuh data
+# (PDRB) lalu menjawab PDRB. Sapaan tidak boleh membawa konteks data lama.
+GREETING_RE = re.compile(
+    r"^\s*(halo+w*|ha+llo+|hai+|hei+|hello|hi|pagi|siang|sore|malam|assalamu['’]?alaikum|"
+    r"selamat (pagi|siang|sore|malam)|permisi|tes|test|ping|hola|yo)(\b|\s|$|[!.]*)$",
+    re.IGNORECASE,
+)
+THANKS_RE = re.compile(
+    r"^\s*(makasih|terima kasih|thanks|thank you|tq|ok+|oke+|sip|mantap|baik|noted|ok sip|oke deh)(\b|\s|$|[!.]*)$",
+    re.IGNORECASE,
+)
+
 # Intent aksi lanjutan (setelah seleksi / hasil ada).
 COMPARE_RE = re.compile(
     r"(bandingkan|dibanding|selisih|selisihnya|lebih (besar|tinggi|banyak)|"
@@ -352,6 +365,25 @@ class RagPipeline:
             return RagOutcome(
                 kind="clarify",
                 text=render_candidates_reply([], recommended_ref=None),
+            )
+
+        # (3b) SAPAAN / TERIMA KASIH murni -> greeting deterministik, TANPA LLM.
+        #      LLM membaca history data lama (PDRB) dan menjawab itu untuk
+        #      "halo" — salah total. Sapaan dijawab tetap, tidak membawa konteks.
+        if selection is None and GREETING_RE.match(text.strip()):
+            return RagOutcome(
+                kind="answer",
+                text=(
+                    "Halo! Saya MARAWA, asisten layanan statistik BPS Kabupaten "
+                    "Padang Pariaman. Silakan tanyakan data yang Anda butuhkan, "
+                    "misalnya: *berapa jumlah penduduk?*, *berapa PDRB 2024?*, "
+                    "atau *berapa produksi padi?*."
+                ),
+            )
+        if selection is None and THANKS_RE.match(text.strip()):
+            return RagOutcome(
+                kind="answer",
+                text="Sama-sama! Silakan tanya lagi kalau butuh data statistik lain.",
             )
 
         # (4) bukan goal data -> biarkan AgentRuntime meneruskan ke LLM.
